@@ -220,29 +220,17 @@ class MyModel(pl.LightningModule):
 
 # %%
 class RandomModel(pl.LightningModule):
-    def __init__(self, input_dim: int, hidden_dim: int, n_classes: int, class_weight: torch.Tensor) -> None:
+    def __init__(self, n_classes: int, class_probs: torch.Tensor) -> None:
         super().__init__()
-        self.input_dim = input_dim
-        self.hidden_dim = hidden_dim
         self.n_classes = n_classes
-        self.loss_fn = nn.CrossEntropyLoss(class_weight)
+        self.class_probs = class_probs
+        self.loss_fn = nn.CrossEntropyLoss()
         self.f1 = torchmetrics.F1Score('binary', average='macro')
         self.acc = torchmetrics.Accuracy('binary')
-
-        self.nets = nn.ModuleList([
-            nn.Sequential(
-                nn.LSTM(self.input_dim, self.hidden_dim, num_layers=1, batch_first=True)
-            ),
-            nn.Sequential(
-                nn.Linear(self.hidden_dim, self.n_classes),
-                nn.Softmax(dim=-1)
-            )
-        ])
     
     def forward(self, x):
-        x, _ = self.nets[0](x)
-        x = self.nets[1](x[:,-1,:])
-        return torch.nn.functional.softmax(torch.rand_like(x, requires_grad=True), dim=-1)
+        preds = torch.randint(0, self.n_classes, (x.shape[0],), device=self.device)
+        return torch.nn.functional.one_hot(preds).float()
 
     def training_step(self, batch, batch_idx):
         X, y = batch
@@ -285,10 +273,10 @@ class RandomModel(pl.LightningModule):
         loss = torch.stack(self.validation_step_losses).mean(dim=0)
         self.scheduler.step(loss)
 
-    def configure_optimizers(self):
-        optimizer = torch.optim.Adam(self.parameters(), lr=0.0002, weight_decay=0.01)
-        self.scheduler = ReduceLROnPlateau(optimizer, 'min')
-        return optimizer
+    # def configure_optimizers(self):
+    #     optimizer = torch.optim.Adam(self.parameters(), lr=0.0002, weight_decay=0.01)
+    #     self.scheduler = ReduceLROnPlateau(optimizer, 'min')
+    #     return optimizer
 
 # %%
 class MinorityVote(pl.LightningModule):
@@ -390,6 +378,7 @@ val_dl = DataLoader(val_ds, batch_size=BATCH_SIZE, shuffle=False, num_workers=10
 test_dl = DataLoader(test_ds, batch_size=BATCH_SIZE, shuffle=False, num_workers=10, pin_memory=True)
 
 model = MyModel(14, 80, 2, weight)
+# model = RandomModel(2, torch.unique(train_ds[:][1], sorted=True, return_counts=True)[1] / len(train_ds))
 if os.path.isfile(CHECKPOINT_PATH):
     os.remove(CHECKPOINT_PATH)
 
