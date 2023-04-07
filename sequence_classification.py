@@ -106,14 +106,18 @@ def extract_raw_data(filename: str):
 def transform_data(tensors: List):
     t2 = []
     for X, y in tensors:
-        newX, newy = torch.zeros_like(X, dtype=torch.float32), y.clone().detach()
+        newX = torch.zeros((X.shape[0], 14), dtype=torch.float32)
+        newy = y.clone().detach()
+        newX[:, :5] = torch.tensor(StandardScaler().fit_transform(X))
         zeros = X == 0
-        newX[1:] = X[1:] / X[:-1]
-        newX[0] = 1.
-        newX = newX.pow(2)
-        newX = (newX - 1) / (newX + 1)
-        newX[zeros & newX.isnan()] = 0.
-        newX[newX.isnan()] = 1.
+        newX[1:, 5:10] = X[1:] / X[:-1]
+        newX[0, 5:10] = 1.
+        newX[:, 5:10] = newX[:, 5:10].pow(2)
+        newX[:, 5:10] = (newX[:, 5:10] - 1) / (newX[:, 5:10] + 1)
+        newX[:, 5:10][zeros & newX[:, 5:10].isnan()] = 0.
+        newX[:, 5:10][newX[:, 5:10].isnan()] = 1.
+        newX[:, 10:] = X[:, :4] / X[:, 4:]
+        newX[:, 10:][newX[:, 10:].isnan()] = 0.
         t2.append((newX, newy))
     return t2
 
@@ -151,10 +155,13 @@ class MyModel(pl.LightningModule):
 
         self.nets = nn.ModuleList([
             nn.Sequential(
-                nn.LSTM(self.input_dim, self.hidden_dim, num_layers=1, batch_first=True, dropout=0.2)
+                nn.Linear(self.input_dim, self.hidden_dim),
+                nn.ReLU(),
+                nn.Dropout(0.25),
+                nn.LSTM(self.hidden_dim, self.hidden_dim, num_layers=1, batch_first=True)
             ),
             nn.Sequential(
-                nn.Dropout(0.2),
+                nn.Dropout(0.25),
                 nn.Linear(self.hidden_dim, self.n_classes),
                 nn.Softmax(dim=-1)
             )
@@ -263,8 +270,80 @@ class RandomModel(pl.LightningModule):
         acc = self.acc(torch.argmax(y_pred, -1), y)
         score = self.f1(torch.argmax(y_pred, -1), y)
         loss = self.loss_fn(y_pred, y)
-        precision = torchmetrics.functional.precision(torch.argmax(y_pred, -1), y)
-        recall = torchmetrics.functional.recall(torch.argmax(y_pred, -1), y)
+        precision = torchmetrics.functional.precision(torch.argmax(y_pred, -1), y, 'binary', average='macro')
+        recall = torchmetrics.functional.recall(torch.argmax(y_pred, -1), y, 'binary', average='macro')
+        self.log('test_acc', acc, on_epoch=True)
+        self.log('test_f1', score, on_epoch=True)
+        self.log('test_loss', loss, on_epoch=True)
+        self.log('test_precision', precision, on_epoch=True)
+        self.log('test_recall', recall, on_epoch=True)
+
+    def on_validation_epoch_start(self) -> None:
+        self.validation_step_losses = []
+
+    def on_validation_epoch_end(self):
+        loss = torch.stack(self.validation_step_losses).mean(dim=0)
+        self.scheduler.step(loss)
+
+    def configure_optimizers(self):
+        optimizer = torch.optim.Adam(self.parameters(), lr=0.0002, weight_decay=0.01)
+        self.scheduler = ReduceLROnPlateau(optimizer, 'min')
+        return optimizer
+
+# %%
+class MinorityVote(pl.LightningModule):
+    def __init__(self, input_dim: int, hidden_dim: int, n_classes: int, class_weight: torch.Tensor) -> None:
+        super().__init__()
+        self.input_dim = input_dim
+        self.hidden_dim = hidden_dim
+        self.n_classes = n_classes
+        self.loss_fn = nn.CrossEntropyLoss(class_weight)
+        self.f1 = torchmetrics.F1Score('binary', average='macro')
+        self.acc = torchmetrics.Accuracy('binary')
+
+        self.nets = nn.ModuleList([
+            nn.Sequential(
+                nn.LSTM(self.input_dim, self.hidden_dim, num_layers=1, batch_first=True)
+            ),
+            nn.Sequential(
+                nn.Linear(self.hidden_dim, self.n_classes),
+                nn.Softmax(dim=-1)
+            )
+        ])
+    
+    def forward(self, x):
+        x, _ = self.nets[0](x)
+        x = self.nets[1](x[:,-1,:])
+        return torch.tile(torch.tensor([0.,1.], dtype=torch.float32, device=self.device, requires_grad=True), (x.shape[0], 1))
+
+    def training_step(self, batch, batch_idx):
+        X, y = batch
+        y_pred = self(X)
+        loss = self.loss_fn(y_pred, y)
+        self.log('train_loss', loss, on_epoch=True)
+        return loss
+
+    @torch.no_grad()
+    def validation_step(self, batch, batch_idx):
+        X, y = batch
+        y_pred = self(X)
+        acc = self.acc(torch.argmax(y_pred, -1), y)
+        f1 = self.f1(torch.argmax(y_pred, -1), y)
+        loss = self.loss_fn(y_pred, y)
+        self.validation_step_losses.append(loss)
+        self.log('val_acc', acc, on_epoch=True)
+        self.log('val_f1', f1, on_epoch=True)
+        self.log('val_loss', loss, on_epoch=True)
+    
+    @torch.no_grad()
+    def test_step(self, batch, batch_idx):
+        X, y = batch
+        y_pred = self(X)
+        acc = self.acc(torch.argmax(y_pred, -1), y)
+        score = self.f1(torch.argmax(y_pred, -1), y)
+        loss = self.loss_fn(y_pred, y)
+        precision = torchmetrics.functional.precision(torch.argmax(y_pred, -1), y, 'binary', average='macro')
+        recall = torchmetrics.functional.recall(torch.argmax(y_pred, -1), y, 'binary', average='macro')
         self.log('test_acc', acc, on_epoch=True)
         self.log('test_f1', score, on_epoch=True)
         self.log('test_loss', loss, on_epoch=True)
@@ -293,14 +372,14 @@ with open('other_data/tensors.pt', 'rb') as f:
     tensors = torch.load(f)
 
 # %%
-tensors = transform_data_simple(tensors)
+tensors = transform_data(tensors)
 
 # %%
 train_ds, val_ds, test_ds = create_datasets(tensors)
 
 weight = torch.unique(train_ds[:][1], sorted=True, return_counts=True)[1] / len(train_ds)
 # weight = torch.flip(weight, dims=[0])
-weight = torch.nn.functional.softmax(1 / weight)
+weight = torch.nn.functional.softmax(torch.pow(1 - weight, 1), dim=0)
 
 # %%
 BATCH_SIZE = 256
@@ -310,7 +389,7 @@ train_dl = DataLoader(train_ds, batch_size=BATCH_SIZE, shuffle=True, num_workers
 val_dl = DataLoader(val_ds, batch_size=BATCH_SIZE, shuffle=False, num_workers=10, pin_memory=True)
 test_dl = DataLoader(test_ds, batch_size=BATCH_SIZE, shuffle=False, num_workers=10, pin_memory=True)
 
-model = MyModel(5, 30, 2, weight)
+model = MyModel(14, 80, 2, weight)
 if os.path.isfile(CHECKPOINT_PATH):
     os.remove(CHECKPOINT_PATH)
 
@@ -332,3 +411,4 @@ trainer.fit(model, train_dl, val_dl)
 
 # %%
 trainer.test(model, test_dl, ckpt_path="best")
+# trainer.test(model, test_dl)
