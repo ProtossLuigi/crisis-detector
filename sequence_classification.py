@@ -141,6 +141,9 @@ def create_datasets(tensors, sequence_len: int = 30):
     ds = TensorDataset(newX, newy)
     return random_split(ds, (.7, .15, .15))
     
+# %%
+def split_tensors(tensors: List) -> List[List]:
+    pass
 
 # %%
 class MyModel(pl.LightningModule):
