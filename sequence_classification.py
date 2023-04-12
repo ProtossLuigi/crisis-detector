@@ -1,7 +1,7 @@
 # %%
 import torch
 from torch import nn
-from torch.utils.data import TensorDataset, random_split, DataLoader
+from torch.utils.data import TensorDataset, random_split, DataLoader, Dataset
 from torch.nn.functional import cross_entropy
 from torch.optim.lr_scheduler import ReduceLROnPlateau
 import torchmetrics
@@ -12,7 +12,8 @@ from sklearn.preprocessing import StandardScaler
 import pandas as pd
 import os
 from tqdm import tqdm
-from typing import List
+from typing import List, Iterable, Tuple
+import random
 
 torch.set_float32_matmul_precision('high')
 
@@ -103,9 +104,9 @@ def extract_raw_data(filename: str):
     
 
 # %%
-def transform_data(tensors: List):
-    t2 = []
-    for X, y in tensors:
+def transform_data(tensors: List) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    Xs, ys, ids = [], [], []
+    for idx, (X, y) in enumerate(tensors):
         newX = torch.zeros((X.shape[0], 14), dtype=torch.float32)
         newy = y.clone().detach()
         newX[:, :5] = torch.tensor(StandardScaler().fit_transform(X))
@@ -118,32 +119,44 @@ def transform_data(tensors: List):
         newX[:, 5:10][newX[:, 5:10].isnan()] = 1.
         newX[:, 10:] = X[:, :4] / X[:, 4:]
         newX[:, 10:][newX[:, 10:].isnan()] = 0.
-        t2.append((newX, newy))
-    return t2
+        Xs.append(newX)
+        ys.append(newy)
+        ids.append(torch.full_like(newy, idx))
+    return torch.cat(Xs), torch.cat(ys), torch.cat(ids)
 
 # %%
-def transform_data_simple(tensors: List):
-    t2 = []
-    for X, y in tensors:
-        newX = torch.tensor(StandardScaler().fit_transform(X), dtype=torch.float32)
-        newy = y.clone().detach()
-        t2.append((newX, newy))
-    return t2
-
-# %%
-def create_datasets(tensors, sequence_len: int = 30):
-    newX, newy = [], []
-    for (X, y) in tensors:
-        for i in range(len(X) - sequence_len + 1):
-            newX.append(X[i:i+sequence_len])
-            newy.append(y[i+sequence_len-1])
-    newX, newy = torch.stack(newX), torch.tensor(newy, dtype=torch.long)
+def create_dataset(X: torch.Tensor, y: torch.Tensor, groups: torch.Tensor, sequence_len: int = 30):
+    newX, newy, newgroups = [], [], []
+    for idx in groups.unique():
+        Xi = X[groups == idx]
+        yi = y[groups == idx]
+        for i in range(len(yi) - sequence_len + 1):
+            newX.append(Xi[i:i+sequence_len])
+            newy.append(yi[i+sequence_len-1])
+            newgroups.append(idx)
+    newX, newy, newgroups = torch.stack(newX), torch.tensor(newy, dtype=torch.long), torch.tensor(newgroups)
     ds = TensorDataset(newX, newy)
-    return random_split(ds, (.7, .15, .15))
+    return ds, newgroups
     
 # %%
-def split_tensors(tensors: List) -> List[List]:
-    pass
+def split_dataset(dataset: Dataset, groups: torch.Tensor, lengths = Iterable[int], shuffle: bool = True) -> List[List]:
+    lengths = torch.tensor(lengths) / sum(lengths) * sum(len(t[0]) for t in tensors)
+    if shuffle:
+        random.shuffle(tensors)
+    else:
+        tensors.sort(key=lambda x: len(x[0]), reverse=True)
+    splits = [[] for _ in range(len(lengths))]
+    split_lengths = [0 for _ in range(len(lengths))]
+    li = 0
+    for t in tensors:
+        if split_lengths[li] + len(t[0]) / 2 < lengths[li] or li == len(lengths) - 1:
+            splits[li].append(t)
+            split_lengths[li] += len(t[0])
+        else:
+            li += 1
+            splits[li].append(t)
+            split_lengths[li] += len(t[0])
+    return splits
 
 # %%
 class MyModel(pl.LightningModule):
@@ -158,13 +171,10 @@ class MyModel(pl.LightningModule):
 
         self.nets = nn.ModuleList([
             nn.Sequential(
-                nn.Linear(self.input_dim, self.hidden_dim),
-                nn.ReLU(),
-                nn.Dropout(0.25),
-                nn.LSTM(self.hidden_dim, self.hidden_dim, num_layers=1, batch_first=True)
+                nn.LSTM(self.input_dim, self.hidden_dim, num_layers=1, batch_first=True)
             ),
             nn.Sequential(
-                nn.Dropout(0.25),
+                nn.Dropout(0.1),
                 nn.Linear(self.hidden_dim, self.n_classes),
                 nn.Softmax(dim=-1)
             )
@@ -217,7 +227,7 @@ class MyModel(pl.LightningModule):
         self.scheduler.step(loss)
 
     def configure_optimizers(self):
-        optimizer = torch.optim.Adam(self.parameters(), lr=0.0002, weight_decay=0.01)
+        optimizer = torch.optim.Adam(self.parameters(), lr=0.00002, weight_decay=0.01)
         self.scheduler = ReduceLROnPlateau(optimizer, 'min')
         return optimizer
 
@@ -349,7 +359,7 @@ class MinorityVote(pl.LightningModule):
         self.scheduler.step(loss)
 
     def configure_optimizers(self):
-        optimizer = torch.optim.Adam(self.parameters(), lr=0.0002, weight_decay=0.01)
+        optimizer = torch.optim.Adam(self.parameters(), lr=0.00002, weight_decay=0.01)
         self.scheduler = ReduceLROnPlateau(optimizer, 'min')
         return optimizer
 
@@ -364,13 +374,18 @@ with open('other_data/tensors.pt', 'rb') as f:
 
 # %%
 tensors = transform_data(tensors)
+tensors = split_tensors(tensors, [.7, .15, .15])
+
+if any(len(t) == 0 for t in tensors):
+    raise RuntimeError('Dataset split is fucked.')
 
 # %%
-train_ds, val_ds, test_ds = create_datasets(tensors)
+train_ds, val_ds, test_ds = (create_dataset(t) for t in tensors)
 
 weight = torch.unique(train_ds[:][1], sorted=True, return_counts=True)[1] / len(train_ds)
 # weight = torch.flip(weight, dims=[0])
-weight = torch.nn.functional.softmax(torch.pow(1 - weight, 1), dim=0)
+weight = torch.pow(1 - weight, .8)
+weight /= sum(weight)
 
 # %%
 BATCH_SIZE = 256
