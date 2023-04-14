@@ -2,7 +2,6 @@
 import torch
 from torch import nn
 from torch.utils.data import TensorDataset, DataLoader, Dataset, Subset
-from torch.nn.functional import cross_entropy
 from torch.optim.lr_scheduler import ReduceLROnPlateau
 import torchmetrics
 import lightning as pl
@@ -10,66 +9,35 @@ from lightning.pytorch.callbacks import ModelCheckpoint
 from lightning.pytorch.callbacks.early_stopping import EarlyStopping
 from sklearn.preprocessing import StandardScaler
 import pandas as pd
+import numpy as np
 import os
 from tqdm import tqdm
 from typing import List, Iterable, Tuple
 from sklearn.model_selection import GroupKFold
+from warnings import warn
 
 torch.set_float32_matmul_precision('high')
 torch.random.manual_seed(42)
 
 # %%
 DATA_DIR = 'crisis_data'
+# FILE_BLACKLIST = [
+#     'crisis_data/Afera Rywina.xlsx',
+#     'crisis_data/Ministerstwo Zdrowia_respiratory od handlarza bronią.xlsx',
+#     'crisis_data/Fake news_baza publikacji.xlsx'
+# ]
 FILE_BLACKLIST = [
-    'crisis_data/Afera Rywina.xlsx',
+    'crisis_data/Jan Szyszko_Córka leśniczego.xlsx',
+    'crisis_data/Komenda Główna Policji.xlsx',
     'crisis_data/Ministerstwo Zdrowia_respiratory od handlarza bronią.xlsx',
-    'crisis_data/Fake news_baza publikacji.xlsx'
+    'crisis_data/Polska Grupa Energetyczna.xlsx',
+    'crisis_data/Polski Związek Kolarski.xlsx',
+    'crisis_data/Zbój_energetyk.xlsx'
 ]
 
 files = [os.path.join(DATA_DIR, f) for f in os.listdir(DATA_DIR) if f[-5:] == '.xlsx']
 for f in FILE_BLACKLIST:
     files.remove(f)
-
-# %%
-def extract_data(filename: str):
-    src_df = pd.read_excel(filename)
-
-    if src_df['Kryzys'].hasnans:
-        src_df['Kryzys'] = src_df['Kryzys'].notna()
-    else:
-        src_df['Kryzys'] = (src_df['Kryzys'] != 'NIE') & (src_df['Kryzys'] != 'Nie')
-    if src_df['Kryzys'].nunique() != 2:
-        raise RuntimeError(f'Crisis column data error in file {filename}.')
-    
-    new_cols = ['brak', 'negatywny', 'neutralny', 'pozytywny']
-    new_cols_ex = [c for c in new_cols if c in src_df['Wydźwięk'].unique().tolist()]
-    src_df[new_cols_ex] = pd.get_dummies(src_df['Wydźwięk'])
-    for col in new_cols:
-        if col not in src_df.columns:
-            src_df[col] = 0
-
-    df = src_df[['Data wydania', 'Kryzys']].groupby(['Data wydania']).any()
-    df = df.join(src_df[['Data wydania'] + new_cols].groupby(['Data wydania']).sum())
-
-    df = df.reindex(pd.date_range(df.index.min(), df.index.max()))
-    df[new_cols] = df[new_cols].fillna(0)
-    df['Kryzys'] = df['Kryzys'].fillna(method='ffill') & df['Kryzys'].fillna(method='bfill')
-
-    df['suma'] = df[new_cols].sum(axis=1)
-
-    X = torch.tensor(df.drop('Kryzys', axis=1).values, dtype=torch.float32)
-    zeros = X == 0
-    X[1:] = X[1:] / X[:-1]
-    X[0] = 1.
-    X = X.pow(2)
-    X = (X - 1) / (X + 1)
-    X[zeros & X.isnan()] = 0.
-    X[X.isnan()] = 1.
-
-    y = torch.tensor(df['Kryzys'].values, dtype=torch.long)
-    
-    return X, y
-    
 
 # %%
 def extract_raw_data(filename: str):
@@ -102,7 +70,37 @@ def extract_raw_data(filename: str):
     y = torch.tensor(df['Kryzys'].values, dtype=torch.long)
     
     return X, y
+
+# %%
+def clip_date_range(index: pd.DatetimeIndex, crisis_start: pd.Timestamp):
+    return pd.date_range(max(index.min(), crisis_start - pd.Timedelta(days=60)), min(index.max(), crisis_start + pd.Timedelta(days=29)))
+
+def extract_data(filename: str, crisis_start: pd.Timestamp):
+    src_df = pd.read_excel(filename)
     
+    new_cols = ['brak', 'negatywny', 'neutralny', 'pozytywny']
+    new_cols_ex = [c for c in new_cols if c in src_df['Wydźwięk'].unique().tolist()]
+    src_df[new_cols_ex] = pd.get_dummies(src_df['Wydźwięk'])
+    for col in new_cols:
+        if col not in src_df.columns:
+            src_df[col] = 0
+
+    df = src_df[['Data wydania'] + new_cols].groupby(['Data wydania']).sum()
+
+    df = df.reindex(clip_date_range(df.index, crisis_start))
+    df[new_cols] = df[new_cols].fillna(0)
+
+    df['suma'] = df[new_cols].sum(axis=1)
+    labels = df.index >= crisis_start
+    if np.unique(labels).shape[0] != 2:
+        warn(f'Samples from only 1 class in {filename}.')
+    if df.shape[0] == 0:
+        warn(f'No data after clipping for {filename}.')
+
+    X = torch.tensor(df.values, dtype=torch.long)
+    y = torch.tensor(labels, dtype=torch.long)
+    
+    return X, y
 
 # %%
 def transform_data(tensors: List) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
@@ -140,23 +138,13 @@ def create_dataset(X: torch.Tensor, y: torch.Tensor, groups: torch.Tensor, seque
     return ds, newgroups
     
 # %%
-def split_dataset(dataset: Dataset, groups: torch.Tensor, lengths: Iterable[int], shuffle: bool = True) -> List[Dataset]:
-    group_idx, group_lengths = groups.unique(return_counts=True)
-    lengths = torch.tensor(lengths) / sum(lengths) * len(dataset)
-    if shuffle:
-        new_idx = torch.randperm(len(group_lengths))
-        group_idx = group_idx[new_idx]
-    splits = torch.zeros((len(lengths), len(dataset)), dtype=bool)
-    li = 0
-    for g in group_idx:
-        if sum(splits[li]) + group_lengths[g] / 2 < lengths[li] or li == len(lengths) - 1:
-            splits[li] |= groups == g
-        else:
-            li += 1
-            splits[li] |= groups == g
-    splits = torch.stack(torch.nonzero(split).squeeze() for split in splits)
-    subsets = [Subset(dataset, split) for split in splits]
-    return subsets
+def split_dataset(dataset: Dataset, groups: torch.Tensor, n_splits: int = 10) -> Tuple[Dataset, Dataset, Dataset]:
+    fold = GroupKFold(n_splits)
+    folds = list(fold.split(dataset, groups=groups))
+    val_idx = folds[1][1]
+    train_idx = list(set(folds[0][0]) - set(val_idx))
+    test_idx = folds[0][1]
+    return Subset(dataset, train_idx), Subset(dataset, val_idx), Subset(dataset, test_idx)
 
 # %%
 def fold_dataset(dataset: Dataset, groups: torch.Tensor, n_splits: int = 5) -> List[Tuple[Dataset, Dataset, Dataset]]:
@@ -169,12 +157,12 @@ def fold_dataset(dataset: Dataset, groups: torch.Tensor, n_splits: int = 5) -> L
 
 # %%
 class MyModel(pl.LightningModule):
-    def __init__(self, input_dim: int, hidden_dim: int, n_classes: int, class_weight: torch.Tensor) -> None:
+    def __init__(self, input_dim: int, hidden_dim: int, n_classes: int) -> None:
         super().__init__()
         self.input_dim = input_dim
         self.hidden_dim = hidden_dim
         self.n_classes = n_classes
-        self.loss_fn = nn.CrossEntropyLoss(class_weight)
+        self.loss_fn = nn.CrossEntropyLoss()
         self.f1 = torchmetrics.F1Score('binary', average='macro')
         self.acc = torchmetrics.Accuracy('binary')
 
@@ -295,18 +283,42 @@ class ConstantModel(pl.LightningModule):
         self.log('test_recall', recall, on_epoch=True)
 
 # %%
+def train_model(train_ds: Dataset, val_ds: Dataset, test_ds: Dataset):
+    BATCH_SIZE = 256
+
+    train_dl = DataLoader(train_ds, batch_size=BATCH_SIZE, shuffle=True, num_workers=10, pin_memory=True)
+    val_dl = DataLoader(val_ds, batch_size=BATCH_SIZE, shuffle=False, num_workers=10, pin_memory=True)
+    test_dl = DataLoader(test_ds, batch_size=BATCH_SIZE, shuffle=False, num_workers=10, pin_memory=True)
+
+    model = MyModel(14, 80, 2)
+
+    checkpoint_callback = ModelCheckpoint(
+        monitor='val_f1',
+        mode='max',
+        save_top_k=1
+    )
+    trainer = pl.Trainer(
+        accelerator='gpu',
+        callbacks=[
+            EarlyStopping(monitor="val_f1", mode="max", patience=20),
+            checkpoint_callback
+        ]
+    )
+    trainer.fit(model, train_dl, val_dl)
+    trainer.test(model, test_dl, ckpt_path="best")
+    return trainer.lightning_module
+
+# %%
 def cross_validate(folds: Iterable[Tuple[Dataset, Dataset, Dataset]], batch_size: int = 512):
     stats = []
     for train_ds, val_ds, test_ds in folds:
         weight = torch.unique(train_ds[:][1], sorted=True, return_counts=True)[1] / len(train_ds)
-        weight = torch.pow(1 - weight, 1)
-        weight /= sum(weight)
 
         train_dl = DataLoader(train_ds, batch_size=batch_size, shuffle=True, num_workers=10, pin_memory=True)
         val_dl = DataLoader(val_ds, batch_size=batch_size, shuffle=False, num_workers=10, pin_memory=True)
         test_dl = DataLoader(test_ds, batch_size=batch_size, shuffle=False, num_workers=10, pin_memory=True)
 
-        model = MyModel(14, 80, 2, weight)
+        model = MyModel(14, 80, 2)
 
         checkpoint_callback = ModelCheckpoint(
             # dirpath='checkpoints/',
@@ -328,7 +340,27 @@ def cross_validate(folds: Iterable[Tuple[Dataset, Dataset, Dataset]], batch_size
     return pd.DataFrame(stats)
 
 # %%
-# tensors = [extract_raw_data(f) for f in tqdm(files)]
+@torch.no_grad()
+def test_shift(model: pl.LightningModule, test_ds: Dataset):
+    X, y = test_ds[:]
+    sequence_idx = (torch.diff(y, prepend=torch.tensor([1]), append=torch.tensor([0])) == -1).nonzero().squeeze()
+    crisis_idx = (torch.diff(y, prepend=torch.tensor([0])) == 1).nonzero().squeeze()
+    y_pred = torch.argmax(model(X), dim=-1)
+    pred_start = torch.diff(y_pred, prepend=torch.tensor([0])) == 1
+    shifts = torch.zeros_like(crisis_idx)
+    for i in range(crisis_idx.shape[0]):
+        while not (pred_start[crisis_idx[i] - shifts[i]] or pred_start[crisis_idx[i] + shifts[i]]):
+            shifts[i] += 1
+            if crisis_idx[i] - shifts[i] < sequence_idx[i] or crisis_idx[i] + shifts[i] >= sequence_idx[i]:
+                continue
+    shifts = shifts.float().abs()
+    return shifts.mean().item(), shifts.std().item()
+
+# %%
+# crisis = pd.read_excel('crisis_data/Daty_kryzysów.xlsx').dropna()
+# crisis = crisis[~crisis['Plik'].apply(lambda x: os.path.join(DATA_DIR, x) in FILE_BLACKLIST)]
+# tensors = [extract_data(os.path.join(DATA_DIR, row.Plik), row.Data) for _, row in tqdm(crisis.iterrows(), total=crisis.shape[0])]
+# tensors = [(X, y) for X, y in tensors if y.shape[0] > 0]
 
 # with open('other_data/tensors.pt', 'wb') as f:
 #     torch.save(tensors, f)
@@ -339,20 +371,22 @@ with open('other_data/tensors.pt', 'rb') as f:
 # %%
 X, y, groups = transform_data(tensors)
 ds, groups = create_dataset(X, y, groups)
-print(len(ds))
-# train_ds, val_ds, test_ds = split_dataset(ds, groups, [.7, .15, .15])
-folds = fold_dataset(ds, groups)
-for (train_ds, val_ds, test_ds) in folds:
-    print(len(train_ds), len(val_ds), len(test_ds))
+train_ds, val_ds, test_ds = split_dataset(ds, groups)
+model = train_model(train_ds, val_ds, test_ds)
+print(test_shift(model, test_ds))
+exit(0)
+# folds = fold_dataset(ds, groups)
+# for (train_ds, val_ds, test_ds) in folds:
+#     print(sum(train_ds[:][1]).item() / len(train_ds), sum(val_ds[:][1]).item() / len(val_ds), sum(test_ds[:][1]).item() / len(test_ds))
 
 # %%
-df = cross_validate(folds)
-print(df)
-print('Means:')
-print(df.mean(axis=0))
-print('Standard deviation:')
-print(df.std(axis=0))
-exit(0)
+# df = cross_validate(folds)
+# print(df)
+# print('Means:')
+# print(df.mean(axis=0))
+# print('Standard deviation:')
+# print(df.std(axis=0))
+# exit(0)
 
 # %%
 
