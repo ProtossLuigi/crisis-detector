@@ -15,6 +15,7 @@ from tqdm import tqdm
 from typing import List, Iterable, Tuple
 from sklearn.model_selection import GroupKFold
 from warnings import warn
+import json
 
 torch.set_float32_matmul_precision('high')
 torch.random.manual_seed(42)
@@ -138,12 +139,15 @@ def create_dataset(X: torch.Tensor, y: torch.Tensor, groups: torch.Tensor, seque
     return ds, newgroups
     
 # %%
-def split_dataset(dataset: Dataset, groups: torch.Tensor, n_splits: int = 10) -> Tuple[Dataset, Dataset, Dataset]:
+def split_dataset(dataset: Dataset, groups: torch.Tensor, n_splits: int = 10, return_groups: bool = False
+                  ) -> Tuple[Dataset, Dataset, Dataset] | Tuple[Tuple[Dataset, Dataset, Dataset], Tuple[torch.Tensor, torch.Tensor, torch.Tensor]]:
     fold = GroupKFold(n_splits)
     folds = list(fold.split(dataset, groups=groups))
     val_idx = folds[1][1]
     train_idx = list(set(folds[0][0]) - set(val_idx))
     test_idx = folds[0][1]
+    if return_groups:
+        return (Subset(dataset, train_idx), Subset(dataset, val_idx), Subset(dataset, test_idx)), (groups[train_idx], groups[val_idx], groups[test_idx])
     return Subset(dataset, train_idx), Subset(dataset, val_idx), Subset(dataset, test_idx)
 
 # %%
@@ -283,7 +287,7 @@ class ConstantModel(pl.LightningModule):
         self.log('test_recall', recall, on_epoch=True)
 
 # %%
-def train_model(train_ds: Dataset, val_ds: Dataset, test_ds: Dataset):
+def train_model(train_ds: Dataset, val_ds: Dataset, test_ds: Dataset) -> pl.LightningModule:
     BATCH_SIZE = 256
 
     train_dl = DataLoader(train_ds, batch_size=BATCH_SIZE, shuffle=True, num_workers=10, pin_memory=True)
@@ -309,7 +313,7 @@ def train_model(train_ds: Dataset, val_ds: Dataset, test_ds: Dataset):
     return trainer.lightning_module
 
 # %%
-def cross_validate(folds: Iterable[Tuple[Dataset, Dataset, Dataset]], batch_size: int = 512):
+def cross_validate(folds: Iterable[Tuple[Dataset, Dataset, Dataset]], batch_size: int = 512) -> pd.DataFrame:
     stats = []
     for train_ds, val_ds, test_ds in folds:
         weight = torch.unique(train_ds[:][1], sorted=True, return_counts=True)[1] / len(train_ds)
@@ -340,25 +344,46 @@ def cross_validate(folds: Iterable[Tuple[Dataset, Dataset, Dataset]], batch_size
     return pd.DataFrame(stats)
 
 # %%
-@torch.no_grad()
-def test_shift(model: pl.LightningModule, test_ds: Dataset):
-    X, y = test_ds[:]
-    sequence_idx = (torch.diff(y, prepend=torch.tensor([1]), append=torch.tensor([0])) == -1).nonzero().squeeze()
-    crisis_idx = (torch.diff(y, prepend=torch.tensor([0])) == 1).nonzero().squeeze()
-    y_pred = torch.argmax(model(X), dim=-1)
+def get_shifts(y_true: torch.Tensor, y_pred: torch.Tensor) -> torch.Tensor:
+    sequence_idx = (torch.diff(y_true, prepend=torch.tensor([1]), append=torch.tensor([0])) == -1).nonzero().squeeze()
+    crisis_idx = (torch.diff(y_true, prepend=torch.tensor([0])) == 1).nonzero().squeeze()
     pred_start = torch.diff(y_pred, prepend=torch.tensor([0])) == 1
     shifts = torch.zeros_like(crisis_idx)
     for i in range(crisis_idx.shape[0]):
-        while not (pred_start[crisis_idx[i] - shifts[i]] or pred_start[crisis_idx[i] + shifts[i]]):
-            shifts[i] += 1
-            if crisis_idx[i] - shifts[i] < sequence_idx[i] or crisis_idx[i] + shifts[i] >= sequence_idx[i]:
-                continue
-    shifts = shifts.float().abs()
+        if y_pred[crisis_idx[i]]:
+            search_interval = -1
+        else:
+            search_interval = 1
+        while not pred_start[crisis_idx[i] + shifts[i]]:
+            shifts[i] += search_interval
+            if crisis_idx[i] + shifts[i] < sequence_idx[i] or crisis_idx[i] + shifts[i] >= sequence_idx[i+1]:
+                break
+    return shifts
+
+# %%
+@torch.no_grad()
+def test_shift(model: pl.LightningModule, test_ds: Dataset) -> Tuple[float, float]:
+    X, y = test_ds[:]
+    y_pred = torch.argmax(model(X), dim=-1)
+    print(y)
+    print(y_pred)
+    shifts = get_shifts(y, y_pred).abs().float()
     return shifts.mean().item(), shifts.std().item()
 
 # %%
-# crisis = pd.read_excel('crisis_data/Daty_kryzysów.xlsx').dropna()
-# crisis = crisis[~crisis['Plik'].apply(lambda x: os.path.join(DATA_DIR, x) in FILE_BLACKLIST)]
+def save_shift(model: pl.LightningModule, test_ds: Dataset, crisis_names: Iterable[str], filename: str) -> None:
+    X, y = test_ds[:]
+    y_pred = torch.argmax(model(X), dim=-1)
+    shifts = get_shifts(y, y_pred)
+    d = {}
+    for i, name in enumerate(crisis_names):
+        d[name] = shifts[i].item()
+    with open(filename, 'w') as f:
+        json.dump(d, f)
+
+# %%
+crisis = pd.read_excel('crisis_data/Daty_kryzysów.xlsx').dropna()
+crisis = crisis[~crisis['Plik'].apply(lambda x: os.path.join(DATA_DIR, x) in FILE_BLACKLIST)]
 # tensors = [extract_data(os.path.join(DATA_DIR, row.Plik), row.Data) for _, row in tqdm(crisis.iterrows(), total=crisis.shape[0])]
 # tensors = [(X, y) for X, y in tensors if y.shape[0] > 0]
 
@@ -371,9 +396,11 @@ with open('other_data/tensors.pt', 'rb') as f:
 # %%
 X, y, groups = transform_data(tensors)
 ds, groups = create_dataset(X, y, groups)
-train_ds, val_ds, test_ds = split_dataset(ds, groups)
+(train_ds, val_ds, test_ds), (_, _, file_ids)  = split_dataset(ds, groups, return_groups=True)
+file_ids = file_ids.unique(sorted=False).flip(dims=(0,))
 model = train_model(train_ds, val_ds, test_ds)
-print(test_shift(model, test_ds))
+test_shift(model, test_ds)
+# save_shift(model, test_ds, list(crisis['Plik'].iloc[file_ids]), 'other_data/shifts.json')
 exit(0)
 # folds = fold_dataset(ds, groups)
 # for (train_ds, val_ds, test_ds) in folds:
