@@ -131,3 +131,4 @@ dmypy.json
 crisis_data/
 lightning_logs/
 other_data/
+.conda/
