@@ -13,7 +13,6 @@ import torchmetrics
 import lightning as pl
 from lightning.pytorch import seed_everything
 from lightning.pytorch.callbacks import ModelCheckpoint, EarlyStopping
-from lightning.pytorch.loggers import CSVLogger
 from transformers import AutoTokenizer, RobertaModel
 from sklearn.preprocessing import StandardScaler
 from sklearn.model_selection import GroupKFold
@@ -121,7 +120,7 @@ def add_embeddings(days_df: pd.DataFrame, text_df: pd.DataFrame, embeddings: Lis
 
 def create_dataset(df: pd.DataFrame, sequence_len: int = 30) -> Tuple[Dataset, torch.Tensor]:
     numeric_cols = ['brak', 'pozytywny', 'neutralny', 'negatywny', 'suma']
-    X = torch.tensor(df[numeric_cols].values, dtype=torch.float32)
+    X = torch.tensor(df[numeric_cols].values, dtype=torch.long)
     y = torch.tensor(df['label'], dtype=torch.long)
     embeddings = torch.tensor(df['embedding'], dtype=torch.float32)
     groups = df['group']
@@ -132,16 +131,16 @@ def create_dataset(df: pd.DataFrame, sequence_len: int = 30) -> Tuple[Dataset, t
         X_diff = torch.ones_like(X_i)
         X_diff[1:] = X_i[1:] / X_i[:-1]
         X_diff = torch.pow(X_diff, 2)
-        X_diff = (X_diff - 1.) / (X_diff + 1)
-        zeros = X_i == 0.
+        X_diff = (X_diff - 1.) / (X_diff + 1.)
+        zeros = X_i == 0
         X_diff[zeros & X_diff.isnan()] = 0.
         X_diff.nan_to_num_(1.)
         X_ratio = X_i[:, :-1] / X_i[:, -1:]
         X_ratio.nan_to_num_(0.)
-        new_features.append(torch.cat((X_diff, X_ratio), dim=1))
-        X_i[...] = torch.tensor(StandardScaler().fit_transform(X_i))
+        X_scaled = torch.tensor(StandardScaler().fit_transform(X_i))
+        new_features.append(torch.cat((X_scaled, X_diff, X_ratio), dim=1))
     
-    X = torch.cat((X, torch.cat(new_features, dim=0), embeddings), dim=1)
+    X = torch.cat((torch.cat(new_features, dim=0), embeddings), dim=1).to(torch.float32)
 
     X_seq, y_seq, groups_seq = [], [], []
     for i in groups.unique():
@@ -181,9 +180,10 @@ def fold_dataset(ds: Dataset, groups: torch.Tensor, n_splits: int = 10, validate
         return [(Subset(ds, train_idx), Subset(ds, test_idx)) for train_idx, test_idx in splits]
 
 class MyModel(pl.LightningModule):
-    def __init__(self, input_dim: int, hidden_dim: int, n_classes: int) -> None:
+    def __init__(self, input_dim: int, hidden_dim: int, n_classes: int, limit_inputs: int = 0) -> None:
         super().__init__()
-        self.input_dim = input_dim
+        self.limit_inputs = bool(limit_inputs)
+        self.input_dim = limit_inputs if self.limit_inputs else input_dim
         self.hidden_dim = hidden_dim
         self.n_classes = n_classes
         self.loss_fn = nn.CrossEntropyLoss()
@@ -192,16 +192,24 @@ class MyModel(pl.LightningModule):
 
         self.nets = nn.ModuleList([
             nn.Sequential(
-                nn.LSTM(self.input_dim, self.hidden_dim, num_layers=1, batch_first=True)
+                nn.Linear(self.input_dim, 384),
+                nn.Dropout(0.125),
+                nn.Tanh(),
+                nn.Linear(384, self.hidden_dim),
+                nn.Dropout(0.125),
+                nn.Tanh(),
+                nn.LSTM(self.hidden_dim, self.hidden_dim, num_layers=1, batch_first=True)
             ),
             nn.Sequential(
-                nn.Dropout(0.1),
+                nn.Dropout(0.125),
                 nn.Linear(self.hidden_dim, self.n_classes),
                 nn.Softmax(dim=-1)
             )
         ])
     
     def forward(self, x):
+        if self.limit_inputs:
+            x = x[..., :self.input_dim]
         x, _ = self.nets[0](x)
         x = self.nets[1](x[:,-1,:])
         return x
@@ -248,7 +256,7 @@ class MyModel(pl.LightningModule):
         self.scheduler.step(loss)
 
     def configure_optimizers(self):
-        optimizer = torch.optim.Adam(self.parameters(), lr=0.0002, weight_decay=0.01)
+        optimizer = torch.optim.Adam(self.parameters(), lr=0.002, weight_decay=0.01)
         self.scheduler = ReduceLROnPlateau(optimizer, 'min')
         return optimizer
 
@@ -271,14 +279,14 @@ def train_model(
     )
     trainer = pl.Trainer(
         accelerator='gpu',
-        logger=CSVLogger(os.getcwd()),
+        logger=False,
         callbacks=[
         checkpoint_callback,
         EarlyStopping(monitor='val_f1', mode='max', patience=20)
         ],
         max_epochs=-1,
         enable_model_summary=verbose,
-        enable_progress_bar=verbose,
+        # enable_progress_bar=verbose,
         deterministic=deterministic
     )
 
@@ -330,23 +338,23 @@ def main():
     if deterministic:
         seed_everything(42, workers=True)
 
-    DAYS_DF_PATH = 'other_data/days_df.feather'
-    POSTS_DF_PATH = 'other_data/posts_df.feather'
-    EMBEDDINGS_PATH = 'other_data/embeddings.pt'
+    DAYS_DF_PATH = 'data/saved_objects/days_df.feather'
+    POSTS_DF_PATH = 'data/saved_objects/posts_df.feather'
+    EMBEDDINGS_PATH = 'data/saved_objects/embeddings.pt'
 
     if end_to_end or not (os.path.isfile(DAYS_DF_PATH) and os.path.isfile(POSTS_DF_PATH)):
-        DATA_DIR = 'crisis_data'
+        DATA_DIR = 'data/crisis_data'
         FILE_BLACKLIST = [
-            'crisis_data/Jan Szyszko_Córka leśniczego.xlsx',
-            'crisis_data/Komenda Główna Policji.xlsx',
-            'crisis_data/Ministerstwo Zdrowia_respiratory od handlarza bronią.xlsx',
-            'crisis_data/Polska Grupa Energetyczna.xlsx',
-            'crisis_data/Polski Związek Kolarski.xlsx',
-            'crisis_data/Zbój_energetyk.xlsx'
+            'Jan Szyszko_Córka leśniczego.xlsx',
+            'Komenda Główna Policji.xlsx',
+            'Ministerstwo Zdrowia_respiratory od handlarza bronią.xlsx',
+            'Polska Grupa Energetyczna.xlsx',
+            'Polski Związek Kolarski.xlsx',
+            'Zbój_energetyk.xlsx'
         ]
 
         crisis = pd.read_excel('crisis_data/Daty_kryzysów.xlsx').dropna()
-        crisis = crisis[~crisis['Plik'].apply(lambda x: os.path.join(DATA_DIR, x) in FILE_BLACKLIST)]
+        crisis = crisis[~crisis['Plik'].apply(lambda x: x in FILE_BLACKLIST)]
 
         days_df, text_df = load_data(crisis['Plik'].apply(lambda x: os.path.join(DATA_DIR, x)).to_list(), crisis['Data'].to_list())
         days_df.to_feather(DAYS_DF_PATH)
@@ -379,7 +387,7 @@ def main():
     # trainer = train_model(model, train_ds, val_ds, deterministic=deterministic)
     # results = test_model(trainer, test_ds)
 
-    cross_validate(MyModel, (782, 128, 2), ds, groups, deterministic=deterministic)
+    cross_validate(MyModel, (782, 128, 2, 14), ds, groups, n_splits=5, deterministic=deterministic)
 
 if __name__ == '__main__':
     main()

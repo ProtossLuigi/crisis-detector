@@ -128,7 +128,7 @@ dmypy.json
 # Pyre type checker
 .pyre/
 
-crisis_data/
+data/
 lightning_logs/
-other_data/
 .conda/
+checkpoints/

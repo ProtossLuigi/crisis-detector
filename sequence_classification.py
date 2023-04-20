@@ -5,6 +5,7 @@ from torch.utils.data import TensorDataset, DataLoader, Dataset, Subset
 from torch.optim.lr_scheduler import ReduceLROnPlateau
 import torchmetrics
 import lightning as pl
+from lightning.pytorch import seed_everything
 from lightning.pytorch.callbacks import ModelCheckpoint
 from lightning.pytorch.callbacks.early_stopping import EarlyStopping
 from sklearn.preprocessing import StandardScaler
@@ -155,7 +156,7 @@ def fold_dataset(dataset: Dataset, groups: torch.Tensor, n_splits: int = 5) -> L
     fold = GroupKFold(n_splits)
     splits = list(fold.split(dataset, groups=groups))
     test_splits = [split[1] for split in splits]
-    val_splits = [test_splits[-1]] + test_splits[:-1]
+    val_splits = test_splits[1:] + test_splits[:1]
     splits = [(list(set(train_idx) - set(val_idx)), val_idx, test_idx) for ((train_idx, test_idx), val_idx) in zip(splits, val_splits)]
     return [(Subset(dataset, train_idx), Subset(dataset, val_idx), Subset(dataset, test_idx)) for train_idx, test_idx, val_idx in splits]
 
@@ -382,6 +383,9 @@ def save_shift(model: pl.LightningModule, test_ds: Dataset, crisis_names: Iterab
         json.dump(d, f)
 
 # %%
+seed_everything(42)
+
+# %%
 crisis = pd.read_excel('crisis_data/Daty_kryzysów.xlsx').dropna()
 crisis = crisis[~crisis['Plik'].apply(lambda x: os.path.join(DATA_DIR, x) in FILE_BLACKLIST)]
 # tensors = [extract_data(os.path.join(DATA_DIR, row.Plik), row.Data) for _, row in tqdm(crisis.iterrows(), total=crisis.shape[0])]
@@ -396,24 +400,23 @@ with open('other_data/tensors.pt', 'rb') as f:
 # %%
 X, y, groups = transform_data(tensors)
 ds, groups = create_dataset(X, y, groups)
-(train_ds, val_ds, test_ds), (_, _, file_ids)  = split_dataset(ds, groups, return_groups=True)
-file_ids = file_ids.unique(sorted=False).flip(dims=(0,))
-model = train_model(train_ds, val_ds, test_ds)
-test_shift(model, test_ds)
+# (train_ds, val_ds, test_ds), (_, _, file_ids)  = split_dataset(ds, groups, return_groups=True)
+# file_ids = file_ids.unique(sorted=False).flip(dims=(0,))
+# model = train_model(train_ds, val_ds, test_ds)
+# test_shift(model, test_ds)
 # save_shift(model, test_ds, list(crisis['Plik'].iloc[file_ids]), 'other_data/shifts.json')
-exit(0)
-# folds = fold_dataset(ds, groups)
+folds = fold_dataset(ds, groups)
 # for (train_ds, val_ds, test_ds) in folds:
 #     print(sum(train_ds[:][1]).item() / len(train_ds), sum(val_ds[:][1]).item() / len(val_ds), sum(test_ds[:][1]).item() / len(test_ds))
 
 # %%
-# df = cross_validate(folds)
-# print(df)
-# print('Means:')
-# print(df.mean(axis=0))
-# print('Standard deviation:')
-# print(df.std(axis=0))
-# exit(0)
+df = cross_validate(folds)
+print(df)
+print('Means:')
+print(df.mean(axis=0))
+print('Standard deviation:')
+print(df.std(axis=0))
+exit(0)
 
 # %%
 

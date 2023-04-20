@@ -28,7 +28,7 @@ dependencies:
   - brotlipy=0.7.0
   - bzip2=1.0.8
   - c-ares=1.18.1
-  - ca-certificates=2022.12.7
+  - ca-certificates=2023.01.10
   - cachecontrol=0.12.11
   - certifi=2022.12.7
   - cffi=1.15.1
@@ -51,6 +51,7 @@ dependencies:
   - deepdiff=6.2.2
   - distlib=0.3.6
   - dulwich=0.21.3
+  - et_xmlfile=1.1.0
   - expat=2.4.8
   - fastapi=0.88.0
   - ffmpeg=4.3
@@ -147,6 +148,7 @@ dependencies:
   - numpy=1.23.5
   - numpy-base=1.23.5
   - openh264=2.1.1
+  - openpyxl=3.0.10
   - openssl=1.1.1t
   - orc=1.7.4
   - ordered-set=4.1.0
