@@ -17,6 +17,8 @@ from transformers import AutoTokenizer, RobertaModel
 from sklearn.preprocessing import StandardScaler
 from sklearn.model_selection import GroupKFold
 
+from embedder import TextVectorizer
+
 torch.set_float32_matmul_precision('high')
 
 def clip_date_range(index: pd.DatetimeIndex, crisis_start: pd.Timestamp | None = None, window_size: int | Tuple[int, int] | None = None) -> pd.DatetimeIndex:
@@ -95,16 +97,7 @@ class SeriesDataset(Dataset):
     def __len__(self) -> int:
         return self.series.shape[0]
     
-class TextVectorizer(pl.LightningModule):
-    def __init__(self, pretrained_name: str, max_length: int = 256, *args: Any, **kwargs: Any) -> None:
-        super().__init__(*args, **kwargs)
-        self.max_length = max_length
 
-        self.model = RobertaModel.from_pretrained(pretrained_name)
-        self.model._modules['pooler'] = torch.nn.Identity()
-    
-    def forward(self, x) -> Any:
-        return self.model(**x).pooler_output.mean(dim=1)
 
 def add_embeddings(days_df: pd.DataFrame, text_df: pd.DataFrame, embeddings: List[torch.Tensor] | torch.Tensor) -> pd.DataFrame:
     if type(embeddings) == list:
@@ -343,8 +336,10 @@ def main():
     EMBEDDINGS_PATH = 'data/saved_objects/embeddings.pt'
 
     if end_to_end or not (os.path.isfile(DAYS_DF_PATH) and os.path.isfile(POSTS_DF_PATH)):
-        DATA_DIR = 'data/crisis_data'
-        FILE_BLACKLIST = [
+        CRISIS_DIR = 'data/crisis_data'
+        CRISIS_FILES_BLACKLIST = [
+            'Crisis Detector - lista wątków_.docx',
+            'Daty_kryzysów.xlsx',
             'Jan Szyszko_Córka leśniczego.xlsx',
             'Komenda Główna Policji.xlsx',
             'Ministerstwo Zdrowia_respiratory od handlarza bronią.xlsx',
@@ -353,10 +348,10 @@ def main():
             'Zbój_energetyk.xlsx'
         ]
 
-        crisis = pd.read_excel('crisis_data/Daty_kryzysów.xlsx').dropna()
-        crisis = crisis[~crisis['Plik'].apply(lambda x: x in FILE_BLACKLIST)]
+        crisis = pd.read_excel(os.path.join(CRISIS_DIR, 'Daty_kryzysów.xlsx')).dropna()
+        crisis = crisis[~crisis['Plik'].apply(lambda x: x in CRISIS_FILES_BLACKLIST)]
 
-        days_df, text_df = load_data(crisis['Plik'].apply(lambda x: os.path.join(DATA_DIR, x)).to_list(), crisis['Data'].to_list())
+        days_df, text_df = load_data(crisis['Plik'].apply(lambda x: os.path.join(CRISIS_DIR, x)).to_list(), crisis['Data'].to_list())
         days_df.to_feather(DAYS_DF_PATH)
         text_df.to_feather(POSTS_DF_PATH)
     else:
