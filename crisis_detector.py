@@ -7,97 +7,19 @@ from tqdm import tqdm
 
 import torch
 from torch import nn
-from torch.utils.data import Dataset, DataLoader, TensorDataset, Subset
+from torch.utils.data import Dataset, DataLoader, TensorDataset
 from torch.optim.lr_scheduler import ReduceLROnPlateau
 import torchmetrics
 import lightning as pl
 from lightning.pytorch import seed_everything
-from lightning.pytorch.callbacks import ModelCheckpoint, EarlyStopping
-from transformers import AutoTokenizer, RobertaModel
+from transformers import AutoTokenizer
 from sklearn.preprocessing import StandardScaler
-from sklearn.model_selection import GroupKFold
 
-from embedder import TextVectorizer
+from embedder import TextEmbedder
+from data_tools import load_data, SeriesDataset
+from training_tools import split_dataset, cross_validate
 
 torch.set_float32_matmul_precision('high')
-
-def clip_date_range(index: pd.DatetimeIndex, crisis_start: pd.Timestamp | None = None, window_size: int | Tuple[int, int] | None = None) -> pd.DatetimeIndex:
-    if type(window_size) == int and crisis_start is not None:
-        return pd.date_range(max(index.min(), crisis_start - pd.Timedelta(days=window_size)), min(index.max(), crisis_start + pd.Timedelta(days=window_size - 1)))
-    elif type(window_size) == tuple and crisis_start is not None:
-        return pd.date_range(max(index.min(), crisis_start - pd.Timedelta(days=window_size[0])), min(index.max(), crisis_start + pd.Timedelta(days=window_size[1] - 1)))
-    else:
-        return pd.date_range(index.min(), index.max())
-
-def extract_data(filename: str, crisis_start: pd.Timestamp, num_samples: int = 100, window_size: int | Tuple[int, int] | None = (60, 30)) -> Tuple[pd.DataFrame, pd.DataFrame]:
-    src_df = pd.read_excel(filename)
-    
-    new_cols = ['brak', 'negatywny', 'neutralny', 'pozytywny']
-    new_cols_ex = [c for c in new_cols if c in src_df['Wydźwięk'].unique().tolist()]
-    src_df[new_cols_ex] = pd.get_dummies(src_df['Wydźwięk'])
-    for col in new_cols:
-        if col not in src_df.columns:
-            src_df[col] = 0
-
-    df = src_df[['Data wydania'] + new_cols].groupby(['Data wydania']).sum()
-
-    df = df.reindex(clip_date_range(df.index, crisis_start, window_size))
-    df[new_cols] = df[new_cols].fillna(0)
-
-    df['suma'] = df[new_cols].sum(axis=1)
-    df['label'] = df.index >= crisis_start
-    if np.unique(df['label']).shape[0] != 2:
-        warn(f'Samples from only 1 class in {filename}.')
-    if df.shape[0] == 0:
-        warn(f'No data after clipping for {filename}.')
-
-    text = src_df.apply(lambda x: ".".join([str(x['Tytuł publikacji']), str(x['Lead']), str(x['Kontekst publikacji'])]), axis=1)
-    text_df = src_df[['Data wydania']].copy()
-    text_df['text'] = text
-    texts = []
-    for date in df.index:
-        daily_posts = text_df[text_df['Data wydania'] == date]
-        texts.append(daily_posts if daily_posts.shape[0] <= num_samples else daily_posts.sample(n=num_samples))
-    text_df = pd.concat(texts).reset_index(drop=True)
-    
-    return df, text_df
-
-def load_data(filenames: Iterable[str], crisis_dates: Iterable[pd.Timestamp], num_samples: int = 100) -> Tuple[pd.DataFrame, pd.DataFrame]:
-    assert len(filenames) == len(crisis_dates)
-    dfs, text_dfs = [], []
-    for i, (fname, date) in enumerate(tqdm(zip(filenames, crisis_dates), total=len(filenames))):
-        df, text_df = extract_data(fname, date, num_samples)
-        df = df.reset_index(names='Data wydania')
-        df['group'] = i
-        text_df['group'] = i
-        dfs.append(df)
-        text_dfs.append(text_df)
-    return pd.concat(dfs, ignore_index=True), pd.concat(text_dfs, ignore_index=True)
-
-class DictDataset(Dataset):
-    def __init__(self, items: dict) -> None:
-        super().__init__()
-        self.items = items
-        self.len = len(self.items[list(self.items.keys())[0]])
-    
-    def __getitem__(self, index):
-        return {key: val[index] for key, val in self.items.items()}
-    
-    def __len__(self) -> int:
-        return self.len
-
-class SeriesDataset(Dataset):
-    def __init__(self, series: pd.Series) -> None:
-        super().__init__()
-        self.series = series
-    
-    def __getitem__(self, index):
-        return self.series.iloc[index]
-    
-    def __len__(self) -> int:
-        return self.series.shape[0]
-    
-
 
 def add_embeddings(days_df: pd.DataFrame, text_df: pd.DataFrame, embeddings: List[torch.Tensor] | torch.Tensor) -> pd.DataFrame:
     if type(embeddings) == list:
@@ -148,29 +70,6 @@ def create_dataset(df: pd.DataFrame, sequence_len: int = 30) -> Tuple[Dataset, t
     groups_seq = torch.tensor(groups_seq)
 
     return TensorDataset(X_seq, y_seq), groups_seq
-
-def split_dataset(ds: Dataset, groups: torch.Tensor, n_splits: int = 10, validate: bool = True) -> Tuple[Dataset, Dataset] | Tuple[Dataset, Dataset, Dataset]:
-    fold = GroupKFold(n_splits)
-    splits = list(fold.split(ds, groups=groups))
-    train_idx = splits[0][0]
-    test_idx = splits[0][1]
-    if validate:
-        val_idx = splits[1][1]
-        train_idx = np.array(list(set(train_idx) - set(val_idx)))
-        return Subset(ds, train_idx), Subset(ds, test_idx), Subset(ds, val_idx)
-    else:
-        return Subset(ds, train_idx), Subset(ds, test_idx)
-
-def fold_dataset(ds: Dataset, groups: torch.Tensor, n_splits: int = 10, validate: bool = True) -> List[Tuple[Dataset, Dataset]] | List[Tuple[Dataset, Dataset, Dataset]]:
-    fold = GroupKFold(n_splits)
-    splits = list(fold.split(ds, groups=groups))
-    if validate:
-        train_idx, test_idx = tuple(zip(*splits))
-        val_idx = test_idx[1:] + test_idx[:1]
-        train_idx = [np.array(list(set(t) - set(v))) for t, v in zip(train_idx, val_idx)]
-        return [(Subset(ds, t), Subset(ds, t2), Subset(ds, v)) for t, v, t2 in zip(train_idx, val_idx, test_idx)]
-    else:
-        return [(Subset(ds, train_idx), Subset(ds, test_idx)) for train_idx, test_idx in splits]
 
 class MyModel(pl.LightningModule):
     def __init__(self, input_dim: int, hidden_dim: int, n_classes: int, limit_inputs: int = 0) -> None:
@@ -253,77 +152,6 @@ class MyModel(pl.LightningModule):
         self.scheduler = ReduceLROnPlateau(optimizer, 'min')
         return optimizer
 
-def train_model(
-        model: pl.LightningModule,
-        train_ds: Dataset,
-        val_ds: Dataset | None = None,
-        batch_size: int = 512,
-        num_workers: int = 10,
-        verbose: bool = True,
-        deterministic: bool = False
-) -> pl.Trainer:
-    train_dl = DataLoader(train_ds, batch_size=batch_size, shuffle=True, num_workers=num_workers, pin_memory=True)
-    val_dl = DataLoader(train_ds, batch_size=batch_size, shuffle=False, num_workers=num_workers, pin_memory=True) if val_ds else None
-    
-    checkpoint_callback = ModelCheckpoint(
-        monitor='val_f1',
-        mode='max',
-        save_top_k=1
-    )
-    trainer = pl.Trainer(
-        accelerator='gpu',
-        logger=False,
-        callbacks=[
-        checkpoint_callback,
-        EarlyStopping(monitor='val_f1', mode='max', patience=20)
-        ],
-        max_epochs=-1,
-        enable_model_summary=verbose,
-        # enable_progress_bar=verbose,
-        deterministic=deterministic
-    )
-
-    trainer.fit(model, train_dl, val_dl)
-    return trainer
-
-def test_model(
-        trainer: pl.Trainer,
-        test_ds: Dataset,
-        batch_size: int = 512,
-        num_workers: int = 10,
-        checkpoint: bool = True,
-        verbose: bool = True
-) -> dict:
-    ckpt_path = 'best' if checkpoint else None
-    test_dl = DataLoader(test_ds, batch_size=batch_size, num_workers=num_workers, pin_memory=True)
-    return trainer.test(dataloaders=test_dl, ckpt_path=ckpt_path, verbose=verbose)[0]
-
-def cross_validate(
-        model_class: type,
-        model_params: Tuple,
-        ds: Dataset,
-        groups: torch.Tensor,
-        n_splits: int = 10,
-        batch_size: int = 512,
-        num_workers: int = 10,
-        deterministic: bool = False
-) -> pd.DataFrame:
-    folds = fold_dataset(ds, groups, n_splits)
-    stats = []
-    for train_ds, test_ds, val_ds in tqdm(folds):
-
-        model = model_class(*model_params)
-
-        trainer = train_model(model, train_ds, val_ds, batch_size, num_workers, False, deterministic)
-        stats.append(test_model(trainer, test_ds, batch_size, num_workers, True, False))
-    stats = pd.DataFrame(stats)
-    print(stats)
-    print('Means:')
-    print(stats.mean(axis=0))
-    print('Standard deviation:')
-    print(stats.std(axis=0))
-    return stats
-
 def main():
     deterministic = True
     end_to_end = False
@@ -351,7 +179,7 @@ def main():
         crisis = pd.read_excel(os.path.join(CRISIS_DIR, 'Daty_kryzysów.xlsx')).dropna()
         crisis = crisis[~crisis['Plik'].apply(lambda x: x in CRISIS_FILES_BLACKLIST)]
 
-        days_df, text_df = load_data(crisis['Plik'].apply(lambda x: os.path.join(CRISIS_DIR, x)).to_list(), crisis['Data'].to_list())
+        days_df, text_df = load_data(crisis['Plik'].apply(lambda x: os.path.join(CRISIS_DIR, x)).to_list(), crisis['Data'].to_list(), 100)
         days_df.to_feather(DAYS_DF_PATH)
         text_df.to_feather(POSTS_DF_PATH)
     else:
@@ -363,7 +191,7 @@ def main():
         ds = SeriesDataset(text_df['text'])
         collate_fn = lambda x: tokenizer(x, truncation=True, padding=True, max_length=256, return_tensors='pt')
         dl = DataLoader(ds, 256, num_workers=10, collate_fn=collate_fn, pin_memory=True)
-        model = TextVectorizer('sdadas/polish-distilroberta')
+        model = TextEmbedder('sdadas/polish-distilroberta')
         trainer = pl.Trainer(accelerator='gpu')
         embeddings = trainer.predict(model, dl)
         embeddings = torch.cat(embeddings, dim=0)
@@ -382,7 +210,7 @@ def main():
     # trainer = train_model(model, train_ds, val_ds, deterministic=deterministic)
     # results = test_model(trainer, test_ds)
 
-    cross_validate(MyModel, (782, 128, 2, 14), ds, groups, n_splits=5, deterministic=deterministic)
+    cross_validate(MyModel, (782, 128, 2), ds, groups, n_splits=5, deterministic=deterministic)
 
 if __name__ == '__main__':
     main()
