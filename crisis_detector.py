@@ -154,7 +154,7 @@ class MyModel(pl.LightningModule):
 
 def main():
     deterministic = True
-    end_to_end = False
+    end_to_end = True
 
     if deterministic:
         seed_everything(42, workers=True)
@@ -191,8 +191,9 @@ def main():
         ds = SeriesDataset(text_df['text'])
         collate_fn = lambda x: tokenizer(x, truncation=True, padding=True, max_length=256, return_tensors='pt')
         dl = DataLoader(ds, 256, num_workers=10, collate_fn=collate_fn, pin_memory=True)
-        model = TextEmbedder('sdadas/polish-distilroberta')
-        trainer = pl.Trainer(accelerator='gpu')
+        model = TextEmbedder.load_from_checkpoint('checkpoints/epoch=0-step=7313.ckpt')
+        # model = TextEmbedder('sdadas/polish-distilroberta')
+        trainer = pl.Trainer(accelerator='gpu', precision='bf16-mixed', logger=None, deterministic=deterministic)
         embeddings = trainer.predict(model, dl)
         embeddings = torch.cat(embeddings, dim=0)
 
@@ -210,7 +211,7 @@ def main():
     # trainer = train_model(model, train_ds, val_ds, deterministic=deterministic)
     # results = test_model(trainer, test_ds)
 
-    cross_validate(MyModel, (782, 128, 2), ds, groups, n_splits=5, deterministic=deterministic)
+    cross_validate(MyModel, (782, 128, 2), ds, groups, n_splits=5, precision='32', deterministic=deterministic)
 
 if __name__ == '__main__':
     main()

@@ -7,11 +7,16 @@ import torch
 from torch.utils.data import Dataset, Subset, DataLoader
 import lightning as pl
 from lightning.pytorch.callbacks import ModelCheckpoint, EarlyStopping
-from sklearn.model_selection import GroupKFold
+from sklearn.model_selection import GroupKFold, StratifiedGroupKFold
 
-def split_dataset(ds: Dataset, groups: torch.Tensor, n_splits: int = 10, validate: bool = True) -> Tuple[Dataset, Dataset] | Tuple[Dataset, Dataset, Dataset]:
-    fold = GroupKFold(n_splits)
-    splits = list(fold.split(ds, groups=groups))
+def split_dataset(ds: Dataset, groups: torch.Tensor, n_splits: int = 10, validate: bool = True, stratify: bool = False
+) -> Tuple[Dataset, Dataset] | Tuple[Dataset, Dataset, Dataset]:
+    if stratify:
+        fold = StratifiedGroupKFold(n_splits, shuffle=True)
+        splits = list(fold.split(ds, ds[:][1], groups=groups))
+    else:
+        fold = GroupKFold(n_splits)
+        splits = list(fold.split(ds, groups=groups))
     train_idx = splits[0][0]
     test_idx = splits[0][1]
     if validate:
@@ -21,9 +26,14 @@ def split_dataset(ds: Dataset, groups: torch.Tensor, n_splits: int = 10, validat
     else:
         return Subset(ds, train_idx), Subset(ds, test_idx)
 
-def fold_dataset(ds: Dataset, groups: torch.Tensor, n_splits: int = 10, validate: bool = True) -> List[Tuple[Dataset, Dataset]] | List[Tuple[Dataset, Dataset, Dataset]]:
-    fold = GroupKFold(n_splits)
-    splits = list(fold.split(ds, groups=groups))
+def fold_dataset(ds: Dataset, groups: torch.Tensor, n_splits: int = 10, validate: bool = True, stratify: bool = False
+) -> List[Tuple[Dataset, Dataset]] | List[Tuple[Dataset, Dataset, Dataset]]:
+    if stratify:
+        fold = StratifiedGroupKFold(n_splits)
+        splits = list(fold.split(ds, ds[:][1], groups=groups))
+    else:
+        fold = GroupKFold(n_splits)
+        splits = list(fold.split(ds, groups=groups))
     if validate:
         train_idx, test_idx = tuple(zip(*splits))
         val_idx = test_idx[1:] + test_idx[:1]
@@ -32,10 +42,34 @@ def fold_dataset(ds: Dataset, groups: torch.Tensor, n_splits: int = 10, validate
     else:
         return [(Subset(ds, train_idx), Subset(ds, test_idx)) for train_idx, test_idx in splits]
 
+def init_trainer(precision: str = 'bf16-mixed', early_stopping: bool = True, max_epochs: int = -1, max_time = None, verbose: bool = True, deterministic: bool = False
+) -> pl.Trainer:
+    checkpoint_callback = ModelCheckpoint(
+        monitor='val_f1',
+        mode='max',
+        save_top_k=1
+    )
+    callbacks = [
+        checkpoint_callback,
+        EarlyStopping(monitor='val_f1', mode='max', patience=20)
+    ] if early_stopping else None
+    trainer = pl.Trainer(
+        accelerator='gpu',
+        precision=precision,
+        logger=False,
+        callbacks=callbacks,
+        max_epochs=max_epochs,
+        max_time=max_time,
+        enable_model_summary=verbose,
+        deterministic=deterministic
+    )
+    return trainer
+
 def train_model(
         model: pl.LightningModule,
         train_ds: Dataset,
         val_ds: Dataset | None = None,
+        precision: str = 'bf16-mixed',
         batch_size: int = 512,
         max_epochs: int = -1,
         max_time = None,
@@ -46,39 +80,31 @@ def train_model(
     train_dl = DataLoader(train_ds, batch_size=batch_size, shuffle=True, num_workers=num_workers, pin_memory=True)
     val_dl = DataLoader(val_ds, batch_size=batch_size, shuffle=False, num_workers=num_workers, pin_memory=True) if val_ds else None
     
-    checkpoint_callback = ModelCheckpoint(
-        monitor='val_f1',
-        mode='max',
-        save_top_k=1
-    )
-    trainer = pl.Trainer(
-        accelerator='gpu',
-        logger=False,
-        callbacks=[
-        checkpoint_callback,
-        EarlyStopping(monitor='val_f1', mode='max', patience=20)
-        ],
-        max_epochs=max_epochs,
-        max_time=max_time,
-        enable_model_summary=verbose,
-        # enable_progress_bar=verbose,
-        deterministic=deterministic
-    )
+    trainer = init_trainer(precision, val_ds is not None, max_epochs, max_time, verbose, deterministic)
 
     trainer.fit(model, train_dl, val_dl)
     return trainer
 
 def test_model(
-        trainer: pl.Trainer,
         test_ds: Dataset,
+        model: pl.LightningModule = None,
+        trainer: pl.Trainer = None,
+        precision: str = 'bf16-mixed',
         batch_size: int = 512,
         num_workers: int = 10,
-        checkpoint: bool = True,
-        verbose: bool = True
+        verbose: bool = True,
+        deterministic: bool = False
 ) -> dict:
-    ckpt_path = 'best' if checkpoint else None
+    if model is None and trainer is None:
+        raise ValueError('No model or trainer provided.')
     test_dl = DataLoader(test_ds, batch_size=batch_size, num_workers=num_workers, pin_memory=True)
-    return trainer.test(dataloaders=test_dl, ckpt_path=ckpt_path, verbose=verbose)[0]
+    if trainer is not None:
+        results = trainer.test(dataloaders=test_dl, ckpt_path='best', verbose=verbose)[0]
+    else:
+        trainer = init_trainer(precision=precision, verbose=verbose, deterministic=deterministic)
+        results = trainer.test(model=model, dataloaders=test_dl, verbose=verbose)[0]
+    return results
+    
 
 def cross_validate(
         model_class: type,
@@ -87,6 +113,7 @@ def cross_validate(
         groups: torch.Tensor,
         use_weights: bool = False,
         n_splits: int = 10,
+        precision: str = 'bf16-mixed',
         batch_size: int = 512,
         max_epochs: int = -1,
         max_time = None,
@@ -102,8 +129,8 @@ def cross_validate(
             model_params += (weight,)
         model = model_class(*model_params)
 
-        trainer = train_model(model, train_ds, val_ds, batch_size, max_epochs, max_time, num_workers, False, deterministic)
-        stats.append(test_model(trainer, test_ds, batch_size, num_workers, True, False))
+        trainer = train_model(model, train_ds, val_ds, precision, batch_size, max_epochs, max_time, num_workers, False, deterministic)
+        stats.append(test_model(test_ds, None, trainer, precision, batch_size, num_workers, True, False))
     stats = pd.DataFrame(stats)
     print(stats)
     print('Means:')

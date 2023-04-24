@@ -20,16 +20,20 @@ torch.set_float32_matmul_precision('high')
 class TextEmbedder(pl.LightningModule):
     def __init__(self, pretrained_name: str, weight: torch.Tensor | None = None, *args: Any, **kwargs: Any) -> None:
         super().__init__(*args, **kwargs)
+        self.pretrained_name = pretrained_name
+
         self.loss_fn = nn.CrossEntropyLoss(weight)
         self.f1 = torchmetrics.F1Score('binary')
         self.acc = torchmetrics.Accuracy('binary')
         self.prec = torchmetrics.Precision('binary')
         self.rec = torchmetrics.Recall('binary')
 
-        config = AutoConfig.from_pretrained(pretrained_name)
+        config = AutoConfig.from_pretrained(self.pretrained_name)
         config.num_labels = 2
         config.output_hidden_states = True
-        self.model = AutoModelForSequenceClassification.from_pretrained(pretrained_name, config=config)
+        self.model = AutoModelForSequenceClassification.from_pretrained(self.pretrained_name, config=config)
+
+        self.save_hyperparameters()
     
     def forward(self, x) -> Any:
         return self.model(**x)
@@ -130,13 +134,15 @@ def main():
     
     groups = torch.tensor(posts_df['group'].values)
 
-    train_ds, val_ds, test_ds = split_dataset(ds, groups)
+    train_ds, test_ds = split_dataset(ds, groups, validate=False, stratify=True)
     class_ratio = train_ds[:][1].unique(return_counts=True)[1] / len(train_ds)
     weight = torch.pow(class_ratio * class_ratio.shape[0], -1)
 
     model = TextEmbedder(pretrained_name, weight)
-    trainer = train_model(model, train_ds, val_ds, 64, max_epochs=1, max_time='00:00:20:00', deterministic=deterministic)
-    test_model(trainer, test_ds, 64)
+    trainer = train_model(model, train_ds, batch_size=64, max_epochs=1, max_time='00:00:20:00', deterministic=deterministic)
+    # model = TextEmbedder.load_from_checkpoint('checkpoints/epoch=0-step=1828.ckpt', pretrained_name=pretrained_name)
+    test_model(train_ds, trainer=trainer, batch_size=64)
+    test_model(test_ds, trainer=trainer, batch_size=64)
     
     # cross_validate(TextEmbedder, (pretrained_name,), ds, groups, use_weights=True, n_splits=5, batch_size=64, max_epochs=1, deterministic=deterministic)
     
