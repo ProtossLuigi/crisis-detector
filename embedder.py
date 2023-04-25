@@ -11,7 +11,7 @@ from lightning.pytorch import seed_everything
 import torchmetrics
 from transformers import AutoModelForSequenceClassification, AutoConfig, AutoTokenizer
 
-from data_tools import load_data, DictDataset, load_text_data
+from data_tools import load_data, DictDataset, load_text_data, get_verified_data, get_data_with_dates
 from training_tools import train_model, test_model, cross_validate, split_dataset
 
 torch.set_float32_matmul_precision('high')
@@ -107,23 +107,19 @@ def create_token_dataset(df: pd.DataFrame, tokenizer_name: str, batch_size: int 
     return ds
 
 def main():
-    CRISIS_PATH = 'data/crisis_data2'
-    DATES_PATH = 'data/crisis_data/Daty_kryzysów.xlsx'
-    TEXTS_PATH = 'data/saved_objects/texts_df.feather'
-    DATASET_PATH = 'data/saved_objects/token_ds.pt'
+    TEXTS_PATH = 'saved_objects/texts_df.feather'
+    DATASET_PATH = 'saved_objects/token_ds.pt'
     pretrained_name = 'sdadas/polish-distilroberta'
 
     deterministic = True
-    end_to_end = False
+    end_to_end = True
 
     if deterministic:
         seed_everything(42)
 
     if end_to_end or not os.path.isfile(TEXTS_PATH):
-        filenames = os.listdir(CRISIS_PATH)
-        dates = pd.read_excel(DATES_PATH)
-        dates = dates[dates['Plik'].isin(filenames)]
-        posts_df = load_text_data([os.path.join(CRISIS_PATH, fname) for fname in dates['Plik']], dates['Data'])
+        dates = get_data_with_dates(get_verified_data())
+        posts_df = load_text_data(dates['path'], dates['Data'])
         posts_df.to_feather(TEXTS_PATH)
     else:
         posts_df = pd.read_feather(TEXTS_PATH)

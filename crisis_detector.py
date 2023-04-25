@@ -16,7 +16,7 @@ from transformers import AutoTokenizer
 from sklearn.preprocessing import StandardScaler
 
 from embedder import TextEmbedder
-from data_tools import load_data, SeriesDataset
+from data_tools import load_data, SeriesDataset, get_all_data, get_data_with_dates
 from training_tools import split_dataset, cross_validate
 
 torch.set_float32_matmul_precision('high')
@@ -159,27 +159,15 @@ def main():
     if deterministic:
         seed_everything(42, workers=True)
 
-    DAYS_DF_PATH = 'data/saved_objects/days_df.feather'
-    POSTS_DF_PATH = 'data/saved_objects/posts_df.feather'
-    EMBEDDINGS_PATH = 'data/saved_objects/embeddings.pt'
+    DAYS_DF_PATH = 'saved_objects/days_df.feather'
+    POSTS_DF_PATH = 'saved_objects/posts_df.feather'
+    EMBEDDINGS_PATH = 'saved_objects/embeddings.pt'
 
     if end_to_end or not (os.path.isfile(DAYS_DF_PATH) and os.path.isfile(POSTS_DF_PATH)):
-        CRISIS_DIR = 'data/crisis_data'
-        CRISIS_FILES_BLACKLIST = [
-            'Crisis Detector - lista wątków_.docx',
-            'Daty_kryzysów.xlsx',
-            'Jan Szyszko_Córka leśniczego.xlsx',
-            'Komenda Główna Policji.xlsx',
-            'Ministerstwo Zdrowia_respiratory od handlarza bronią.xlsx',
-            'Polska Grupa Energetyczna.xlsx',
-            'Polski Związek Kolarski.xlsx',
-            'Zbój_energetyk.xlsx'
-        ]
 
-        crisis = pd.read_excel(os.path.join(CRISIS_DIR, 'Daty_kryzysów.xlsx')).dropna()
-        crisis = crisis[~crisis['Plik'].apply(lambda x: x in CRISIS_FILES_BLACKLIST)]
+        data = get_data_with_dates(get_all_data())
 
-        days_df, text_df = load_data(crisis['Plik'].apply(lambda x: os.path.join(CRISIS_DIR, x)).to_list(), crisis['Data'].to_list(), 100)
+        days_df, text_df = load_data(data['path'].to_list(), data['Data'].to_list(), 100, True)
         days_df.to_feather(DAYS_DF_PATH)
         text_df.to_feather(POSTS_DF_PATH)
     else:

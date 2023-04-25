@@ -1,11 +1,43 @@
-from typing import Iterable, Tuple
+from typing import Iterable, Tuple, List
 from warnings import warn
 import numpy as np
 import pandas as pd
 from tqdm import tqdm
+import os
 
 import torch
 from torch.utils.data import Dataset
+
+DATA_DIR = 'dane'
+VERIFIED_DIR = 'dane/Etap I - zweryfikowane szeregi'
+DATES_FILE = 'dane/Daty_kryzysów.xlsx'
+
+FILE_BLACKLIST = [
+    'Daty_kryzysów.xlsx',
+    'Crisis Detector - lista wątków_.docx',
+    'Fake news_baza publikacji.xlsx'
+]
+
+def get_verified_data() -> List[str]:
+    filenames = [os.path.join(VERIFIED_DIR, file) for file in os.listdir(VERIFIED_DIR) if os.path.isfile(os.path.join(VERIFIED_DIR, file))]
+    filenames = [fname for fname in filenames if os.path.basename(fname) not in FILE_BLACKLIST]
+    return filenames
+
+def get_all_data() -> List[str]:
+    filenames = [os.path.join(DATA_DIR, file) for file in os.listdir(DATA_DIR) if os.path.isfile(os.path.join(DATA_DIR, file))]
+    filenames += [os.path.join(VERIFIED_DIR, file) for file in os.listdir(VERIFIED_DIR) if os.path.isfile(os.path.join(VERIFIED_DIR, file))]
+    filenames = [fname for fname in filenames if os.path.basename(fname) not in FILE_BLACKLIST]
+    return filenames
+
+def get_crisis_dates() -> pd.DataFrame:
+    return pd.read_excel(DATES_FILE)
+
+def get_data_with_dates(files: List[str]) -> pd.DataFrame:
+    fnames = list(map(os.path.basename, files))
+    dates = get_crisis_dates()
+    dates = dates[dates['Plik'].isin(fnames)]
+    dates['path'] = dates['Plik'].apply(lambda x: files[fnames.index(x)])
+    return dates
 
 def clip_date_range(index: pd.DatetimeIndex, crisis_start: pd.Timestamp | None = None, window_size: int | Tuple[int, int] | None = None) -> pd.DatetimeIndex:
     if type(window_size) == int and crisis_start is not None:
@@ -19,8 +51,9 @@ def extract_data(
         filename: str,
         crisis_start: pd.Timestamp | None = None,
         num_samples: int = 0,
-        window_size: int | Tuple[int, int] | None = (60, 30)
-) -> Tuple[pd.DataFrame, pd.DataFrame]:
+        window_size: int | Tuple[int, int] | None = (60, 30),
+        drop_invalid: bool = False
+) -> Tuple[pd.DataFrame, pd.DataFrame] | None:
     src_df = pd.read_excel(filename)
     
     new_cols = ['brak', 'negatywny', 'neutralny', 'pozytywny']
@@ -36,12 +69,18 @@ def extract_data(
         
         if src_df['Kryzys'].hasnans:
             if src_df['Kryzys'].nunique(dropna=False) != 2:
-                warn(f'Invalid Kryzys column values in {filename}.')
+                if drop_invalid:
+                    return None
+                else:
+                    warn(f'Invalid Kryzys column values in {filename}.')
             src_df['label'] = ~src_df['Kryzys'].isna()
         else:
             src_df['Kryzys'] = src_df['Kryzys'].apply(lambda x: x[:3])
             if src_df['Kryzys'].nunique(dropna=False) != 2:
-                warn(f'Invalid Kryzys column values in {filename}.')
+                if drop_invalid:
+                    return None
+                else:
+                    warn(f'Invalid Kryzys column values in {filename}.')
             src_df['label'] = src_df['Kryzys'] != 'NIE'
 
     df = src_df[['Data wydania'] + new_cols].groupby(['Data wydania']).sum()
@@ -55,9 +94,15 @@ def extract_data(
         df['label'] = df['label'].bfill() & df['label'].ffill()
 
     if np.unique(df['label']).shape[0] != 2:
-        warn(f'Samples from only 1 class in {filename}.')
+        if drop_invalid:
+            return None
+        else:
+            warn(f'Samples from only 1 class in {filename}.')
     if df.shape[0] == 0:
-        warn(f'No data after clipping for {filename}.')
+        if drop_invalid:
+            return None
+        else:
+            warn(f'No data after clipping for {filename}.')
 
     text = src_df.apply(lambda x: " . ".join([str(x['Tytuł publikacji']), str(x['Lead']), str(x['Kontekst publikacji'])]), axis=1)
     text_df = src_df[['Data wydania', 'label']].copy()
@@ -70,13 +115,18 @@ def extract_data(
     
     return df, text_df
 
-def load_data(filenames: Iterable[str], crisis_dates: Iterable[pd.Timestamp] | None = None, num_samples: int = 0) -> Tuple[pd.DataFrame, pd.DataFrame]:
+def load_data(
+        filenames: Iterable[str], crisis_dates: Iterable[pd.Timestamp] | None = None, num_samples: int = 0, drop_invalid: bool = False
+) -> Tuple[pd.DataFrame, pd.DataFrame]:
     if not crisis_dates:
         crisis_dates = [None] * len(filenames)
     assert len(filenames) == len(crisis_dates)
     dfs, text_dfs = [], []
     for i, (fname, date) in enumerate(tqdm(zip(filenames, crisis_dates), total=len(filenames))):
-        df, text_df = extract_data(fname, date, num_samples)
+        dfp = extract_data(fname, date, num_samples, drop_invalid=drop_invalid)
+        if dfp is None:
+            continue
+        df, text_df = dfp
         df = df.reset_index(names='Data wydania')
         df['group'] = i
         text_df['group'] = i
@@ -87,8 +137,9 @@ def load_data(filenames: Iterable[str], crisis_dates: Iterable[pd.Timestamp] | N
 def extract_text_data(
         filename: str,
         crisis_start: pd.Timestamp,
-        window_size: int | Tuple[int, int] = 30
-) -> pd.DataFrame:
+        window_size: int | Tuple[int, int] = 30,
+        drop_invalid: bool = False
+) -> pd.DataFrame | None:
     src_df = pd.read_excel(filename)
 
     if type(window_size) == int:
@@ -99,12 +150,18 @@ def extract_text_data(
 
     if src_df['Kryzys'].hasnans:
         if src_df['Kryzys'].nunique(dropna=False) != 2:
-            warn(f'Invalid Kryzys column values in {filename}.')
+            if drop_invalid:
+                return None
+            else:
+                warn(f'Invalid Kryzys column values in {filename}.')
         labels = ~src_df['Kryzys'].isna()
     else:
         src_df['Kryzys'] = src_df['Kryzys'].apply(lambda x: x[:3])
         if src_df['Kryzys'].nunique(dropna=False) != 2:
-            warn(f'Invalid Kryzys column values in {filename}.')
+            if drop_invalid:
+                return None
+            else:
+                warn(f'Invalid Kryzys column values in {filename}.')
         labels = src_df['Kryzys'] != 'NIE'
 
     text = src_df.apply(lambda x: " . ".join([str(x['Tytuł publikacji']), str(x['Lead']), str(x['Kontekst publikacji'])]), axis=1)
@@ -114,11 +171,13 @@ def extract_text_data(
     
     return text_df
 
-def load_text_data(filenames: Iterable[str], crisis_dates: Iterable[pd.Timestamp]) -> pd.DataFrame:
+def load_text_data(filenames: Iterable[str], crisis_dates: Iterable[pd.Timestamp], drop_invalid: bool = False) -> pd.DataFrame:
     assert len(filenames) == len(crisis_dates)
     dfs = []
     for i, (fname, date) in enumerate(tqdm(zip(filenames, crisis_dates), total=len(filenames))):
         df = extract_text_data(fname, date)
+        if df is None:
+            continue
         df['group'] = i
         dfs.append(df)
     return pd.concat(dfs, ignore_index=True)

@@ -132,3 +132,5 @@ data/
 lightning_logs/
 .conda/
 checkpoints/
+dane/
+saved_objects/
