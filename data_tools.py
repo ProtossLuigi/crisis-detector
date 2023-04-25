@@ -59,7 +59,7 @@ def extract_data(
     if df.shape[0] == 0:
         warn(f'No data after clipping for {filename}.')
 
-    text = src_df.apply(lambda x: ".".join([str(x['Tytuł publikacji']), str(x['Lead']), str(x['Kontekst publikacji'])]), axis=1)
+    text = src_df.apply(lambda x: " . ".join([str(x['Tytuł publikacji']), str(x['Lead']), str(x['Kontekst publikacji'])]), axis=1)
     text_df = src_df[['Data wydania', 'label']].copy()
     text_df['text'] = text
     texts = []
@@ -83,6 +83,45 @@ def load_data(filenames: Iterable[str], crisis_dates: Iterable[pd.Timestamp] | N
         dfs.append(df)
         text_dfs.append(text_df)
     return pd.concat(dfs, ignore_index=True), pd.concat(text_dfs, ignore_index=True)
+
+def extract_text_data(
+        filename: str,
+        crisis_start: pd.Timestamp,
+        window_size: int | Tuple[int, int] = 30
+) -> pd.DataFrame:
+    src_df = pd.read_excel(filename)
+
+    if type(window_size) == int:
+        window_size = (window_size, window_size)
+    window = (crisis_start - pd.Timedelta(days=window_size[0]), crisis_start + pd.Timedelta(days=window_size[1]))
+
+    src_df = src_df[(window[0] <= src_df['Data wydania']) & (src_df['Data wydania'] < window[1])]
+
+    if src_df['Kryzys'].hasnans:
+        if src_df['Kryzys'].nunique(dropna=False) != 2:
+            warn(f'Invalid Kryzys column values in {filename}.')
+        labels = ~src_df['Kryzys'].isna()
+    else:
+        src_df['Kryzys'] = src_df['Kryzys'].apply(lambda x: x[:3])
+        if src_df['Kryzys'].nunique(dropna=False) != 2:
+            warn(f'Invalid Kryzys column values in {filename}.')
+        labels = src_df['Kryzys'] != 'NIE'
+
+    text = src_df.apply(lambda x: " . ".join([str(x['Tytuł publikacji']), str(x['Lead']), str(x['Kontekst publikacji'])]), axis=1)
+    text_df = pd.DataFrame({'text': text, 'label': labels})
+    sample_size = text_df['label'].value_counts().min()
+    text_df = pd.concat((text_df[text_df['label']].sample(sample_size), text_df[~text_df['label']].sample(sample_size))).sort_index().reset_index(drop=True)
+    
+    return text_df
+
+def load_text_data(filenames: Iterable[str], crisis_dates: Iterable[pd.Timestamp]) -> pd.DataFrame:
+    assert len(filenames) == len(crisis_dates)
+    dfs = []
+    for i, (fname, date) in enumerate(tqdm(zip(filenames, crisis_dates), total=len(filenames))):
+        df = extract_text_data(fname, date)
+        df['group'] = i
+        dfs.append(df)
+    return pd.concat(dfs, ignore_index=True)
 
 class DictDataset(Dataset):
     def __init__(self, items: dict, labels: torch.Tensor | None = None) -> None:

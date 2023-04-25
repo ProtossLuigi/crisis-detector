@@ -8,11 +8,10 @@ from torch import nn
 from torch.optim.lr_scheduler import ReduceLROnPlateau
 import lightning as pl
 from lightning.pytorch import seed_everything
-from lightning.pytorch.callbacks import ModelCheckpoint, EarlyStopping
 import torchmetrics
 from transformers import AutoModelForSequenceClassification, AutoConfig, AutoTokenizer
 
-from data_tools import load_data, SeriesDataset, DictDataset
+from data_tools import load_data, DictDataset, load_text_data
 from training_tools import train_model, test_model, cross_validate, split_dataset
 
 torch.set_float32_matmul_precision('high')
@@ -109,19 +108,22 @@ def create_token_dataset(df: pd.DataFrame, tokenizer_name: str, batch_size: int 
 
 def main():
     CRISIS_PATH = 'data/crisis_data2'
+    DATES_PATH = 'data/crisis_data/Daty_kryzysów.xlsx'
     TEXTS_PATH = 'data/saved_objects/texts_df.feather'
     DATASET_PATH = 'data/saved_objects/token_ds.pt'
     pretrained_name = 'sdadas/polish-distilroberta'
 
     deterministic = True
-    end_to_end = False
+    end_to_end = True
 
     if deterministic:
         seed_everything(42)
 
     if end_to_end or not os.path.isfile(TEXTS_PATH):
         filenames = os.listdir(CRISIS_PATH)
-        _, posts_df = load_data([os.path.join(CRISIS_PATH, fname) for fname in filenames])
+        dates = pd.read_excel(DATES_PATH)
+        dates = dates[dates['Plik'].isin(filenames)]
+        posts_df = load_text_data([os.path.join(CRISIS_PATH, fname) for fname in dates['Plik']], dates['Data'])
         posts_df.to_feather(TEXTS_PATH)
     else:
         posts_df = pd.read_feather(TEXTS_PATH)
@@ -136,10 +138,11 @@ def main():
 
     train_ds, test_ds = split_dataset(ds, groups, validate=False, stratify=True)
     class_ratio = train_ds[:][1].unique(return_counts=True)[1] / len(train_ds)
-    weight = torch.pow(class_ratio * class_ratio.shape[0], -1)
+    # weight = torch.pow(class_ratio * class_ratio.shape[0], -1)
+    weight = None
 
     model = TextEmbedder(pretrained_name, weight)
-    trainer = train_model(model, train_ds, batch_size=64, max_epochs=1, max_time='00:00:20:00', deterministic=deterministic)
+    trainer = train_model(model, train_ds, batch_size=64, max_epochs=4, max_time='00:00:20:00', deterministic=deterministic)
     # model = TextEmbedder.load_from_checkpoint('checkpoints/epoch=0-step=1828.ckpt', pretrained_name=pretrained_name)
     test_model(train_ds, trainer=trainer, batch_size=64)
     test_model(test_ds, trainer=trainer, batch_size=64)
