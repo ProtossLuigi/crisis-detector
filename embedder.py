@@ -114,7 +114,7 @@ def main():
     pretrained_name = 'sdadas/polish-distilroberta'
 
     deterministic = True
-    end_to_end = True
+    end_to_end = False
 
     if deterministic:
         seed_everything(42)
@@ -136,13 +136,13 @@ def main():
     
     groups = torch.tensor(posts_df['group'].values)
 
-    train_ds, test_ds = split_dataset(ds, groups, validate=False, stratify=True)
+    train_ds, val_ds, test_ds = split_dataset(ds, groups, stratify=True)
     class_ratio = train_ds[:][1].unique(return_counts=True)[1] / len(train_ds)
     # weight = torch.pow(class_ratio * class_ratio.shape[0], -1)
     weight = None
 
     model = TextEmbedder(pretrained_name, weight)
-    trainer = train_model(model, train_ds, batch_size=64, max_epochs=4, max_time='00:00:20:00', deterministic=deterministic)
+    trainer = train_model(model, train_ds, val_ds, batch_size=64, max_epochs=4, deterministic=deterministic)
     # model = TextEmbedder.load_from_checkpoint('checkpoints/epoch=0-step=1828.ckpt', pretrained_name=pretrained_name)
     test_model(train_ds, trainer=trainer, batch_size=64)
     test_model(test_ds, trainer=trainer, batch_size=64)
