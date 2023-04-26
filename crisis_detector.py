@@ -79,8 +79,10 @@ class MyModel(pl.LightningModule):
         self.hidden_dim = hidden_dim
         self.n_classes = n_classes
         self.loss_fn = nn.CrossEntropyLoss()
-        self.f1 = torchmetrics.F1Score('binary', average='macro')
-        self.acc = torchmetrics.Accuracy('binary')
+        self.f1 = torchmetrics.F1Score('multiclass', num_classes=2, average='macro')
+        self.acc = torchmetrics.Accuracy('multiclass', num_classes=2, average='macro')
+        self.prec = torchmetrics.Precision('multiclass', num_classes=2, average='macro')
+        self.rec = torchmetrics.Recall('multiclass', num_classes=2, average='macro')
 
         self.nets = nn.ModuleList([
             nn.Sequential(
@@ -132,8 +134,8 @@ class MyModel(pl.LightningModule):
         acc = self.acc(torch.argmax(y_pred, -1), y)
         score = self.f1(torch.argmax(y_pred, -1), y)
         loss = self.loss_fn(y_pred, y)
-        precision = torchmetrics.functional.precision(torch.argmax(y_pred, -1), y, 'binary', average='macro')
-        recall = torchmetrics.functional.recall(torch.argmax(y_pred, -1), y, 'binary', average='macro')
+        precision = self.prec(torch.argmax(y_pred, -1), y)
+        recall = self.rec(torch.argmax(y_pred, -1), y)
         self.log('test_acc', acc, on_epoch=True)
         self.log('test_f1', score, on_epoch=True)
         self.log('test_loss', loss, on_epoch=True)

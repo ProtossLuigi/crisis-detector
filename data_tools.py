@@ -175,7 +175,7 @@ def load_text_data(filenames: Iterable[str], crisis_dates: Iterable[pd.Timestamp
     assert len(filenames) == len(crisis_dates)
     dfs = []
     for i, (fname, date) in enumerate(tqdm(zip(filenames, crisis_dates), total=len(filenames))):
-        df = extract_text_data(fname, date)
+        df = extract_text_data(fname, date, drop_invalid=drop_invalid)
         if df is None:
             continue
         df['group'] = i

@@ -22,10 +22,10 @@ class TextEmbedder(pl.LightningModule):
         self.pretrained_name = pretrained_name
 
         self.loss_fn = nn.CrossEntropyLoss(weight)
-        self.f1 = torchmetrics.F1Score('binary')
-        self.acc = torchmetrics.Accuracy('binary')
-        self.prec = torchmetrics.Precision('binary')
-        self.rec = torchmetrics.Recall('binary')
+        self.f1 = torchmetrics.F1Score('multiclass', num_classes=2, average='macro')
+        self.acc = torchmetrics.Accuracy('multiclass', num_classes=2, average='macro')
+        self.prec = torchmetrics.Precision('multiclass', num_classes=2, average='macro')
+        self.rec = torchmetrics.Recall('multiclass', num_classes=2, average='macro')
 
         config = AutoConfig.from_pretrained(self.pretrained_name)
         config.num_labels = 2
@@ -83,7 +83,7 @@ class TextEmbedder(pl.LightningModule):
         self.scheduler.step(loss)
 
     def configure_optimizers(self):
-        optimizer = torch.optim.Adam(self.parameters(), lr=0.0002, weight_decay=0.01)
+        optimizer = torch.optim.Adam(self.parameters(), lr=0.000002, weight_decay=0.01)
         self.scheduler = ReduceLROnPlateau(optimizer, 'min')
         return optimizer
 
@@ -112,14 +112,14 @@ def main():
     pretrained_name = 'sdadas/polish-distilroberta'
 
     deterministic = True
-    end_to_end = True
+    end_to_end = False
 
     if deterministic:
         seed_everything(42)
 
     if end_to_end or not os.path.isfile(TEXTS_PATH):
         dates = get_data_with_dates(get_verified_data())
-        posts_df = load_text_data(dates['path'], dates['Data'])
+        posts_df = load_text_data(dates['path'], dates['Data'], drop_invalid=True)
         posts_df.to_feather(TEXTS_PATH)
     else:
         posts_df = pd.read_feather(TEXTS_PATH)
@@ -138,7 +138,7 @@ def main():
     weight = None
 
     model = TextEmbedder(pretrained_name, weight)
-    trainer = train_model(model, train_ds, val_ds, batch_size=64, max_epochs=4, deterministic=deterministic)
+    trainer = train_model(model, train_ds, val_ds, batch_size=64, max_epochs=5, deterministic=deterministic)
     # model = TextEmbedder.load_from_checkpoint('checkpoints/epoch=0-step=1828.ckpt', pretrained_name=pretrained_name)
     test_model(train_ds, trainer=trainer, batch_size=64)
     test_model(test_ds, trainer=trainer, batch_size=64)

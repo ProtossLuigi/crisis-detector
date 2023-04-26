@@ -54,7 +54,6 @@ def init_trainer(precision: str = 'bf16-mixed', early_stopping: bool = True, max
         EarlyStopping(monitor='val_f1', mode='max', patience=20)
     ] if early_stopping else None
     trainer = pl.Trainer(
-        accelerator='gpu',
         precision=precision,
         logger=False,
         callbacks=callbacks,
