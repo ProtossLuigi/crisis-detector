@@ -26,14 +26,14 @@ def get_verified_data() -> List[str]:
 def get_all_data() -> List[str]:
     filenames = [os.path.join(DATA_DIR, file) for file in os.listdir(DATA_DIR) if os.path.isfile(os.path.join(DATA_DIR, file))]
     filenames += [os.path.join(VERIFIED_DIR, file) for file in os.listdir(VERIFIED_DIR) if os.path.isfile(os.path.join(VERIFIED_DIR, file))]
-    filenames = [fname for fname in filenames if os.path.basename(fname) not in FILE_BLACKLIST]
+    filenames = [fname for fname in filenames if os.path.basename(fname).replace("'","_") not in FILE_BLACKLIST]
     return filenames
 
 def get_crisis_dates() -> pd.DataFrame:
     return pd.read_excel(DATES_FILE)
 
 def get_data_with_dates(files: List[str]) -> pd.DataFrame:
-    fnames = list(map(os.path.basename, files))
+    fnames = list(map(lambda x: os.path.basename(x).replace("'","_"), files))
     dates = get_crisis_dates()
     dates = dates[dates['Plik'].isin(fnames)]
     dates['path'] = dates['Plik'].apply(lambda x: files[fnames.index(x)])

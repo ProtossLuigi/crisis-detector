@@ -181,7 +181,7 @@ def main():
         ds = SeriesDataset(text_df['text'])
         collate_fn = lambda x: tokenizer(x, truncation=True, padding=True, max_length=256, return_tensors='pt')
         dl = DataLoader(ds, 256, num_workers=10, collate_fn=collate_fn, pin_memory=True)
-        model = TextEmbedder.load_from_checkpoint('checkpoints/epoch=1-step=6850.ckpt')
+        model = TextEmbedder.load_from_checkpoint('checkpoints/epoch=0-step=4178.ckpt')
         # model = TextEmbedder('sdadas/polish-distilroberta')
         trainer = pl.Trainer(accelerator='gpu', precision='bf16-mixed', logger=False, deterministic=deterministic)
         embeddings = trainer.predict(model, dl)
