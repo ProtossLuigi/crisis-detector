@@ -33,11 +33,15 @@ def get_crisis_dates() -> pd.DataFrame:
     return pd.read_excel(DATES_FILE)
 
 def get_data_with_dates(files: List[str]) -> pd.DataFrame:
-    fnames = list(map(lambda x: os.path.basename(x).replace("'","_"), files))
+    fnames = list(map(os.path.basename, files))
     dates = get_crisis_dates()
-    dates = dates[dates['Plik'].isin(fnames)]
-    dates['path'] = dates['Plik'].apply(lambda x: files[fnames.index(x)])
-    return dates
+    dates1 = dates[dates['Plik'].isin(fnames)]
+    dates2 = dates[dates['Plik2'].isin(fnames)]
+    if len(dates1) > len(dates2):
+        dates['path'] = dates['Plik'].apply(lambda x: files[fnames.index(x)])
+    else:
+        dates['path'] = dates['Plik2'].apply(lambda x: files[fnames.index(x)])
+    return dates[['path', 'Data']]
 
 def clip_date_range(index: pd.DatetimeIndex, crisis_start: pd.Timestamp | None = None, window_size: int | Tuple[int, int] | None = None) -> pd.DatetimeIndex:
     if type(window_size) == int and crisis_start is not None:
