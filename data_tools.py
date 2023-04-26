@@ -38,9 +38,11 @@ def get_data_with_dates(files: List[str]) -> pd.DataFrame:
     dates1 = dates[dates['Plik'].isin(fnames)]
     dates2 = dates[dates['Plik2'].isin(fnames)]
     if len(dates1) > len(dates2):
-        dates['path'] = dates['Plik'].apply(lambda x: files[fnames.index(x)])
+        dates1['path'] = dates1['Plik'].apply(lambda x: files[fnames.index(x)])
+        dates = dates1
     else:
-        dates['path'] = dates['Plik2'].apply(lambda x: files[fnames.index(x)])
+        dates2['path'] = dates2['Plik2'].apply(lambda x: files[fnames.index(x)])
+        dates = dates2
     return dates[['path', 'Data']]
 
 def clip_date_range(index: pd.DatetimeIndex, crisis_start: pd.Timestamp | None = None, window_size: int | Tuple[int, int] | None = None) -> pd.DatetimeIndex:
