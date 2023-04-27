@@ -129,7 +129,7 @@ def cross_validate(
         model = model_class(*model_params)
 
         trainer = train_model(model, train_ds, val_ds, precision, batch_size, max_epochs, max_time, num_workers, False, deterministic)
-        stats.append(test_model(test_ds, None, trainer, precision, batch_size, num_workers, True, False))
+        stats.append(test_model(test_ds, None, trainer, precision, batch_size, num_workers, False, deterministic))
     stats = pd.DataFrame(stats)
     print(stats)
     print('Means:')

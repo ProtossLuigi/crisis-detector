@@ -134,3 +134,4 @@ lightning_logs/
 checkpoints/
 dane/
 saved_objects/
+plots/

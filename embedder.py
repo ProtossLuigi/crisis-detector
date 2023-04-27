@@ -83,7 +83,7 @@ class TextEmbedder(pl.LightningModule):
         self.scheduler.step(loss)
 
     def configure_optimizers(self):
-        optimizer = torch.optim.Adam(self.parameters(), lr=0.000002, weight_decay=0.01)
+        optimizer = torch.optim.Adam(self.parameters(), lr=0.00001, weight_decay=0.01)
         self.scheduler = ReduceLROnPlateau(optimizer, 'min')
         return optimizer
 
@@ -104,6 +104,7 @@ def create_token_dataset(df: pd.DataFrame, tokenizer_name: str, batch_size: int 
         X[key] = torch.cat(X[key], dim=0)
     y = torch.cat(y, dim=0)
     ds = DictDataset(X, y)
+    tokenizer = None
     return ds
 
 def main():
