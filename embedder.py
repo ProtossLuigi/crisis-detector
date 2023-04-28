@@ -134,7 +134,7 @@ def main():
     groups = torch.tensor(posts_df['group'].values)
 
     train_ds, val_ds, test_ds = split_dataset(ds, groups, stratify=True)
-    class_ratio = train_ds[:][1].unique(return_counts=True)[1] / len(train_ds)
+    class_ratio = train_ds[:]['label'].unique(return_counts=True)[1] / len(train_ds)
     # weight = torch.pow(class_ratio * class_ratio.shape[0], -1)
     weight = None
 

@@ -13,7 +13,10 @@ def split_dataset(ds: Dataset, groups: torch.Tensor, n_splits: int = 10, validat
 ) -> Tuple[Dataset, Dataset] | Tuple[Dataset, Dataset, Dataset]:
     if stratify:
         fold = StratifiedGroupKFold(n_splits, shuffle=True)
-        splits = list(fold.split(ds, ds[:][1], groups=groups))
+        if isinstance(ds[0], dict):
+            splits = list(fold.split(ds, ds.items['label'], groups=groups))
+        else:
+            splits = list(fold.split(ds, ds[:][1], groups=groups))
     else:
         fold = GroupKFold(n_splits)
         splits = list(fold.split(ds, groups=groups))
@@ -30,7 +33,10 @@ def fold_dataset(ds: Dataset, groups: torch.Tensor, n_splits: int = 10, validate
 ) -> List[Tuple[Dataset, Dataset]] | List[Tuple[Dataset, Dataset, Dataset]]:
     if stratify:
         fold = StratifiedGroupKFold(n_splits)
-        splits = list(fold.split(ds, ds[:][1], groups=groups))
+        if isinstance(ds[0], dict):
+            splits = list(fold.split(ds, ds.items['label'], groups=groups))
+        else:
+            splits = list(fold.split(ds, ds[:][1], groups=groups))
     else:
         fold = GroupKFold(n_splits)
         splits = list(fold.split(ds, groups=groups))

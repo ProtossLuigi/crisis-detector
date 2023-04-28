@@ -204,7 +204,7 @@ def save_shift(model: pl.LightningModule, test_ds: Dataset, crisis_names: Iterab
 
 def main():
     deterministic = True
-    end_to_end = False
+    end_to_end = True
 
     if deterministic:
         seed_everything(42, workers=True)
@@ -217,7 +217,7 @@ def main():
 
         data = get_data_with_dates(get_all_data())
 
-        days_df, text_df = load_data(data['path'].to_list(), data['Data'].to_list(), 100, True)
+        days_df, text_df = load_data(data['path'].to_list(), data['Data'].to_list(), 50, True)
         days_df.to_feather(DAYS_DF_PATH)
         text_df.to_feather(POSTS_DF_PATH)
     else:
@@ -229,7 +229,7 @@ def main():
         ds = SeriesDataset(text_df['text'])
         collate_fn = lambda x: tokenizer(x, truncation=True, padding=True, max_length=256, return_tensors='pt')
         dl = DataLoader(ds, 256, num_workers=10, collate_fn=collate_fn, pin_memory=True)
-        model = TextEmbedder.load_from_checkpoint('checkpoints/epoch=2-step=9753.ckpt')
+        model = TextEmbedder.load_from_checkpoint('checkpoints/epoch=0-step=4199.ckpt')
         # model = TextEmbedder('sdadas/polish-distilroberta')
         trainer = pl.Trainer(precision='bf16-mixed', logger=False, deterministic=deterministic)
         embeddings = trainer.predict(model, dl)
