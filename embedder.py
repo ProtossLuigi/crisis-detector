@@ -35,22 +35,22 @@ class TextEmbedder(pl.LightningModule):
         self.save_hyperparameters()
     
     def forward(self, x) -> Any:
-        return self.model(**x)
+        return self.model(input_ids=x['input_ids'], attention_mask=x['attention_mask'])
     
     def training_step(self, batch, batch_idx):
-        X, y = batch
-        y_pred = self(X).logits
+        y = batch['label']
+        y_pred = self(batch).logits
         loss = self.loss_fn(y_pred, y)
         self.log('train_loss', loss, on_epoch=True)
         return loss
     
     @torch.no_grad()
     def validation_step(self, batch, batch_idx):
-        X, y = batch
-        y_pred = self(X).logits
-        acc = self.acc(torch.argmax(y_pred, -1), y)
-        f1 = self.f1(torch.argmax(y_pred, -1), y)
-        loss = self.loss_fn(y_pred, y)
+        y_true = batch['label']
+        y_pred = self(batch).logits
+        acc = self.acc(torch.argmax(y_pred, -1), y_true)
+        f1 = self.f1(torch.argmax(y_pred, -1), y_true)
+        loss = self.loss_fn(y_pred, y_true)
         self.validation_step_losses.append(loss)
         self.log('val_acc', acc, on_epoch=True)
         self.log('val_f1', f1, on_epoch=True)
@@ -58,13 +58,13 @@ class TextEmbedder(pl.LightningModule):
     
     @torch.no_grad()
     def test_step(self, batch, batch_idx):
-        X, y = batch
-        y_pred = self(X).logits
-        acc = self.acc(torch.argmax(y_pred, -1), y)
-        score = self.f1(torch.argmax(y_pred, -1), y)
-        loss = self.loss_fn(y_pred, y)
-        precision = self.prec(torch.argmax(y_pred, -1), y)
-        recall = self.rec(torch.argmax(y_pred, -1), y)
+        y_true = batch['label']
+        y_pred = self(batch).logits
+        acc = self.acc(torch.argmax(y_pred, -1), y_true)
+        score = self.f1(torch.argmax(y_pred, -1), y_true)
+        loss = self.loss_fn(y_pred, y_true)
+        precision = self.prec(torch.argmax(y_pred, -1), y_true)
+        recall = self.rec(torch.argmax(y_pred, -1), y_true)
         self.log('test_acc', acc, on_epoch=True)
         self.log('test_f1', score, on_epoch=True)
         self.log('test_loss', loss, on_epoch=True)
@@ -113,7 +113,7 @@ def main():
     pretrained_name = 'sdadas/polish-distilroberta'
 
     deterministic = True
-    end_to_end = True
+    end_to_end = False
 
     if deterministic:
         seed_everything(42)

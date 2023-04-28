@@ -192,15 +192,12 @@ class DictDataset(Dataset):
     def __init__(self, items: dict, labels: torch.Tensor | None = None) -> None:
         super().__init__()
         self.items = items
-        self.labels = labels
+        self.items['label'] = labels
         self.len = len(self.items[list(self.items.keys())[0]])
     
     def __getitem__(self, index):
         sample = {key: val[index] for key, val in self.items.items()}
-        if self.labels is None:
-            return sample
-        else:
-            return sample, self.labels[index]
+        return sample
     
     def __len__(self) -> int:
         return self.len
