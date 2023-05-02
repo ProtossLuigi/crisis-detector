@@ -217,7 +217,7 @@ def main():
 
         data = get_data_with_dates(get_all_data())
 
-        days_df, text_df = load_data(data['path'].to_list(), data['Data'].to_list(), 50, True)
+        days_df, text_df = load_data(data['path'].to_list(), data['Data'].to_list(), 200, True)
         days_df.to_feather(DAYS_DF_PATH)
         text_df.to_feather(POSTS_DF_PATH)
     else:
@@ -225,11 +225,11 @@ def main():
         text_df = pd.read_feather(POSTS_DF_PATH)
 
     if end_to_end or not os.path.isfile(EMBEDDINGS_PATH):
-        tokenizer = AutoTokenizer.from_pretrained('sdadas/polish-distilroberta')
+        tokenizer = AutoTokenizer.from_pretrained('xlm-roberta-base')
         ds = SeriesDataset(text_df['text'])
         collate_fn = lambda x: tokenizer(x, truncation=True, padding=True, max_length=256, return_tensors='pt')
-        dl = DataLoader(ds, 256, num_workers=10, collate_fn=collate_fn, pin_memory=True)
-        model = TextEmbedder.load_from_checkpoint('checkpoints/epoch=0-step=4199.ckpt')
+        dl = DataLoader(ds, 64, num_workers=10, collate_fn=collate_fn, pin_memory=True)
+        model = TextEmbedder.load_from_checkpoint('saved_objects/finetuned-xlm-roberta-base.ckpt')
         # model = TextEmbedder('sdadas/polish-distilroberta')
         trainer = pl.Trainer(precision='bf16-mixed', logger=False, deterministic=deterministic)
         embeddings = trainer.predict(model, dl)
