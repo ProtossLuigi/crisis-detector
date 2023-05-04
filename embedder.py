@@ -113,7 +113,7 @@ def main():
     pretrained_name = 'sdadas/polish-distilroberta'
 
     deterministic = True
-    end_to_end = False
+    end_to_end = True
 
     if deterministic:
         seed_everything(42)
@@ -122,12 +122,18 @@ def main():
         dates = get_data_with_dates(get_verified_data())
         posts_df = load_text_data(dates['path'], dates['Data'], drop_invalid=True)
         posts_df.to_feather(TEXTS_PATH)
+
+        if deterministic:
+            seed_everything(42)
     else:
         posts_df = pd.read_feather(TEXTS_PATH)
     
     if end_to_end or not os.path.isfile(DATASET_PATH):
         ds = create_token_dataset(posts_df, pretrained_name)
         torch.save(ds, DATASET_PATH)
+
+        if deterministic:
+            seed_everything(42)
     else:
         ds = torch.load(DATASET_PATH)
     
