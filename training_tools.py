@@ -10,7 +10,7 @@ from lightning.pytorch.callbacks import ModelCheckpoint, EarlyStopping
 from sklearn.model_selection import GroupKFold, StratifiedGroupKFold
 
 def split_dataset(ds: Dataset, groups: torch.Tensor, n_splits: int = 10, validate: bool = True, stratify: bool = False
-) -> Tuple[Dataset, Dataset] | Tuple[Dataset, Dataset, Dataset]:
+) -> Tuple[Subset, Subset] | Tuple[Subset, Subset, Subset]:
     if stratify:
         fold = StratifiedGroupKFold(n_splits, shuffle=True)
         if isinstance(ds[0], dict):
@@ -30,7 +30,7 @@ def split_dataset(ds: Dataset, groups: torch.Tensor, n_splits: int = 10, validat
         return Subset(ds, train_idx), Subset(ds, test_idx)
 
 def fold_dataset(ds: Dataset, groups: torch.Tensor, n_splits: int = 10, validate: bool = True, stratify: bool = False
-) -> List[Tuple[Dataset, Dataset]] | List[Tuple[Dataset, Dataset, Dataset]]:
+) -> List[Tuple[Subset, Subset]] | List[Tuple[Subset, Subset, Subset]]:
     if stratify:
         fold = StratifiedGroupKFold(n_splits)
         if isinstance(ds[0], dict):

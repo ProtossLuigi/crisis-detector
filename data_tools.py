@@ -135,7 +135,9 @@ def load_data(
         df, text_df = dfp
         df = df.reset_index(names='Data wydania')
         df['group'] = i
+        df['name'] = os.path.basename(fname)
         text_df['group'] = i
+        text_df['name'] = os.path.basename(fname)
         dfs.append(df)
         text_dfs.append(text_df)
     return pd.concat(dfs, ignore_index=True), pd.concat(text_dfs, ignore_index=True)

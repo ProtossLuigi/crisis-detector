@@ -113,7 +113,7 @@ def main():
     pretrained_name = 'sdadas/polish-distilroberta'
 
     deterministic = True
-    end_to_end = True
+    end_to_end = False
 
     if deterministic:
         seed_everything(42)
