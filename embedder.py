@@ -75,16 +75,16 @@ class TextEmbedder(pl.LightningModule):
     def predict_step(self, batch: Any, batch_idx: int, dataloader_idx: int = 0) -> Any:
         return self(batch).hidden_states[0][:, 0, :]
     
-    def on_validation_epoch_start(self) -> None:
-        self.validation_step_losses = []
+    # def on_validation_epoch_start(self) -> None:
+    #     self.validation_step_losses = []
 
-    def on_validation_epoch_end(self):
-        loss = torch.stack(self.validation_step_losses).mean(dim=0)
-        self.scheduler.step(loss)
+    # def on_validation_epoch_end(self):
+    #     loss = torch.stack(self.validation_step_losses).mean(dim=0)
+    #     self.scheduler.step(loss)
 
     def configure_optimizers(self):
-        optimizer = torch.optim.Adam(self.parameters(), lr=0.00001, weight_decay=0.01)
-        self.scheduler = ReduceLROnPlateau(optimizer, 'min')
+        optimizer = torch.optim.RAdam(self.parameters(), lr=1e-5, weight_decay=0.01)
+        # self.scheduler = ReduceLROnPlateau(optimizer, 'min')
         return optimizer
 
 def create_token_dataset(df: pd.DataFrame, tokenizer_name: str, batch_size: int = 256, max_length: int | None = 256):
@@ -140,12 +140,12 @@ def main():
     groups = torch.tensor(posts_df['group'].values)
 
     train_ds, val_ds, test_ds = split_dataset(ds, groups, stratify=True)
-    class_ratio = train_ds[:]['label'].unique(return_counts=True)[1] / len(train_ds)
+    # class_ratio = train_ds[:]['label'].unique(return_counts=True)[1] / len(train_ds)
     # weight = torch.pow(class_ratio * class_ratio.shape[0], -1)
     weight = None
 
     model = TextEmbedder(pretrained_name, weight)
-    trainer = train_model(model, train_ds, val_ds, batch_size=64, max_epochs=5, deterministic=deterministic)
+    trainer = train_model(model, train_ds, val_ds, batch_size=64, max_epochs=10, deterministic=deterministic)
     # model = TextEmbedder.load_from_checkpoint('checkpoints/epoch=0-step=1828.ckpt', pretrained_name=pretrained_name)
     test_model(train_ds, trainer=trainer, batch_size=64)
     test_model(test_ds, trainer=trainer, batch_size=64)

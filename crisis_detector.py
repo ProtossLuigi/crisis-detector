@@ -2,6 +2,7 @@ from typing import List, Tuple, Iterable, Any
 from warnings import warn
 import os
 import json
+import math
 import numpy as np
 import pandas as pd
 from tqdm import tqdm
@@ -73,10 +74,13 @@ def create_dataset(df: pd.DataFrame, sequence_len: int = 30) -> Tuple[Dataset, t
     return TensorDataset(X_seq, y_seq), groups_seq
 
 class MyModel(pl.LightningModule):
-    def __init__(self, input_dim: int, hidden_dim: int, n_classes: int, limit_inputs: int = 0) -> None:
+    def __init__(self, input_dim: int, hidden_dim: int, n_classes: int, input_limit: slice | None = None) -> None:
         super().__init__()
-        self.limit_inputs = bool(limit_inputs)
-        self.input_dim = limit_inputs if self.limit_inputs else input_dim
+        self.input_limit = input_limit
+        if self.input_limit is not None:
+            self.input_dim = len(range(*self.input_limit.indices(input_dim)))
+        else:
+            self.input_dim = input_dim
         self.hidden_dim = hidden_dim
         self.n_classes = n_classes
         self.loss_fn = nn.CrossEntropyLoss()
@@ -103,8 +107,8 @@ class MyModel(pl.LightningModule):
         ])
     
     def forward(self, x):
-        if self.limit_inputs:
-            x = x[..., :self.input_dim]
+        if self.input_limit is not None:
+            x = x[..., self.input_limit]
         x, _ = self.nets[0](x)
         x = self.nets[1](x[:,-1,:])
         return x
@@ -155,11 +159,40 @@ class MyModel(pl.LightningModule):
         self.scheduler = ReduceLROnPlateau(optimizer, 'min')
         return optimizer
 
-class MyModel2(pl.LightningModule):
-    def __init__(self, input_dim: int, hidden_dim: int, n_classes: int, limit_inputs: int = 0) -> None:
+class PositionalEncoding(nn.Module):
+    def __init__(self, d_model, max_len=5000):
+        """
+        Args
+            d_model: Hidden dimensionality of the input.
+            max_len: Maximum length of a sequence to expect.
+        """
         super().__init__()
-        self.limit_inputs = bool(limit_inputs)
-        self.input_dim = limit_inputs if self.limit_inputs else input_dim
+
+        # Create matrix of [SeqLen, HiddenDim] representing the positional encoding for max_len inputs
+        pe = torch.zeros(max_len, d_model)
+        position = torch.arange(0, max_len, dtype=torch.float).unsqueeze(1)
+        div_term = torch.exp(torch.arange(0, d_model, 2).float() * (-math.log(10000.0) / d_model))
+        pe[:, 0::2] = torch.sin(position * div_term)
+        pe[:, 1::2] = torch.cos(position * div_term)
+        pe = pe.unsqueeze(0)
+
+        # register_buffer => Tensor which is not a parameter, but should be part of the modules state.
+        # Used for tensors that need to be on the same device as the module.
+        # persistent=False tells PyTorch to not add the buffer to the state dict (e.g. when we save the model)
+        self.register_buffer("pe", pe, persistent=False)
+
+    def forward(self, x):
+        x = x + self.pe[:, : x.size(1)]
+        return x
+
+class MyModel2(pl.LightningModule):
+    def __init__(self, input_dim: int, hidden_dim: int, n_classes: int, input_limit: slice | None = None) -> None:
+        super().__init__()
+        self.input_limit = input_limit
+        if self.input_limit is not None:
+            self.input_dim = len(range(*self.input_limit.indices(input_dim)))
+        else:
+            self.input_dim = input_dim
         self.hidden_dim = hidden_dim
         self.n_classes = n_classes
         self.loss_fn = nn.CrossEntropyLoss()
@@ -186,8 +219,8 @@ class MyModel2(pl.LightningModule):
         ])
     
     def forward(self, x):
-        if self.limit_inputs:
-            x = x[..., :self.input_dim]
+        if self.input_limit is not None:
+            x = x[..., self.input_limit]
         x, _ = self.nets[0](x)
         x = self.nets[1](x[:,-1,:])
         return x
@@ -426,10 +459,10 @@ def main():
     # data = get_data_with_dates(get_all_data())
     # names = list(map(lambda x: os.path.basename(x)[:-5], data['path'].to_list()))
     # days_df['name'] = days_df['group'].apply(lambda x: names[x])
-    df = pd.concat([pd.concat((days_df.loc[(days_df['group'] == g) & ~days_df['label']].iloc[-30:], days_df.loc[(days_df['group'] == g) & days_df['label']].iloc[:30])) for g in days_df['group'].unique()], ignore_index=True)
-    df = cross_validate2(MyModel, (782, 128, 2), ds, groups, df, n_splits=5, precision='32', deterministic=deterministic)
-    df = df[['name', 'Data wydania', 'label_true', 'label_predict']].rename(columns={'Data wydania': 'date'})
-    df.to_csv('saved_objects/prediction_results.csv')
+    # df = pd.concat([pd.concat((days_df.loc[(days_df['group'] == g) & ~days_df['label']].iloc[-30:], days_df.loc[(days_df['group'] == g) & days_df['label']].iloc[:30])) for g in days_df['group'].unique()], ignore_index=True)
+    # df = cross_validate2(MyModel, (782, 128, 2), ds, groups, df, n_splits=5, precision='32', deterministic=deterministic)
+    # df = df[['name', 'Data wydania', 'label_true', 'label_predict']].rename(columns={'Data wydania': 'date'})
+    # df.to_csv('saved_objects/prediction_results.csv')
 
     # train_ds, test_ds, val_ds = split_dataset(ds, groups)
     # model = MyModel(782, 128, 2)
@@ -438,7 +471,7 @@ def main():
 
     # print(test_shift(model, test_ds))
 
-    # cross_validate(MyModel, (782, 128, 2), ds, groups, n_splits=5, precision='32', deterministic=deterministic)
+    cross_validate(MyModel, (782, 128, 2, slice(14, 782)), ds, groups, n_splits=5, precision='32', deterministic=deterministic)
 
 if __name__ == '__main__':
     main()
