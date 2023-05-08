@@ -73,21 +73,108 @@ def create_dataset(df: pd.DataFrame, sequence_len: int = 30) -> Tuple[Dataset, t
 
     return TensorDataset(X_seq, y_seq), groups_seq
 
-class MyModel(pl.LightningModule):
-    def __init__(self, input_dim: int, hidden_dim: int, n_classes: int, input_limit: slice | None = None) -> None:
+class MyClassifier(pl.LightningModule):
+    def __init__(
+            self,
+            input_dim: int = 782,
+            lr: float = 0.001,
+            weight_decay: float = 0.01,
+            class_ratios: torch.Tensor | None = None,
+            input_limit: slice | None = None
+    ) -> None:
         super().__init__()
         self.input_limit = input_limit
         if self.input_limit is not None:
             self.input_dim = len(range(*self.input_limit.indices(input_dim)))
         else:
             self.input_dim = input_dim
+        self.lr = lr
+        self.weight_decay = weight_decay
+        if class_ratios is None:
+            self.class_weights = None
+        else:
+            self.class_weights = .5 / class_ratios
+
+        self.loss_fn = nn.CrossEntropyLoss(self.class_weights)
+        self.f1 = torchmetrics.F1Score('multiclass', num_classes=2, average=None)
+        self.acc = torchmetrics.Accuracy('multiclass', num_classes=2, average='micro')
+        self.prec = torchmetrics.Precision('multiclass', num_classes=2, average=None)
+        self.rec = torchmetrics.Recall('multiclass', num_classes=2, average=None)
+    
+    def forward(self, x):
+        raise NotImplementedError()
+
+    def training_step(self, batch, batch_idx):
+        if type(batch) == tuple or type(batch) == list:
+            X, y = batch
+        elif type(batch) == dict:
+            X, y = batch, batch['label']
+        else:
+            raise TypeError(f'Invalid batch type {type(batch)}. Expected tuple, list or dict.')
+        y_pred = self(X)
+        loss = self.loss_fn(y_pred, y)
+        self.log('train_loss', loss, on_epoch=True)
+        return loss
+
+    @torch.no_grad()
+    def validation_step(self, batch, batch_idx):
+        if type(batch) == tuple or type(batch) == list:
+            X, y = batch
+        elif type(batch) == dict:
+            X, y = batch, batch['label']
+        else:
+            raise TypeError(f'Invalid batch type {type(batch)}. Expected tuple, list or dict.')
+        y_pred = self(X)
+        metrics = {
+            'val_loss': self.loss_fn(y_pred, y),
+            'val_acc': self.acc(torch.argmax(y_pred, -1), y),
+            'val_f1': self.f1(torch.argmax(y_pred, -1), y).mean()
+        }
+        self.validation_step_losses.append(metrics['val_loss'])
+        self.log_dict(metrics, on_epoch=True)
+    
+    @torch.no_grad()
+    def test_step(self, batch, batch_idx):
+        if type(batch) == tuple or type(batch) == list:
+            X, y = batch
+        elif type(batch) == dict:
+            X, y = batch, batch['label']
+        else:
+            raise TypeError(f'Invalid batch type {type(batch)}. Expected tuple, list or dict.')
+        y_pred = self(X)
+        metrics = {
+            'test_loss': self.loss_fn(y_pred, y),
+            'test_acc': self.acc(torch.argmax(y_pred, -1), y)
+        }
+        metrics['test_f1_neg'], metrics['test_f1_pos'] = self.f1(torch.argmax(y_pred, -1), y)
+        metrics['test_precision_neg'], metrics['test_precision_pos'] = self.prec(torch.argmax(y_pred, -1), y)
+        metrics['test_recall_neg'], metrics['test_recall_pos'] = self.rec(torch.argmax(y_pred, -1), y)
+        self.log_dict(metrics)
+
+    def on_validation_epoch_start(self) -> None:
+        self.validation_step_losses = []
+
+    def on_validation_epoch_end(self):
+        loss = torch.stack(self.validation_step_losses).mean(dim=0)
+        self.scheduler.step(loss)
+
+    def configure_optimizers(self):
+        optimizer = torch.optim.Adam(self.parameters(), lr=self.lr, weight_decay=self.weight_decay)
+        self.scheduler = ReduceLROnPlateau(optimizer, 'min')
+        return optimizer
+
+class MyLSTM(MyClassifier):
+    def __init__(
+            self,
+            hidden_dim: int = 128,
+            input_dim: int = 782,
+            lr: float = 0.002,
+            weight_decay: float = 0.01,
+            class_ratios: torch.Tensor | None = None,
+            input_limit: slice | None = None
+    ) -> None:
+        super().__init__(input_dim, lr, weight_decay, class_ratios, input_limit)
         self.hidden_dim = hidden_dim
-        self.n_classes = n_classes
-        self.loss_fn = nn.CrossEntropyLoss()
-        self.f1 = torchmetrics.F1Score('multiclass', num_classes=2, average='macro')
-        self.acc = torchmetrics.Accuracy('multiclass', num_classes=2, average='macro')
-        self.prec = torchmetrics.Precision('multiclass', num_classes=2, average='macro')
-        self.rec = torchmetrics.Recall('multiclass', num_classes=2, average='macro')
 
         self.nets = nn.ModuleList([
             nn.Sequential(
@@ -101,7 +188,7 @@ class MyModel(pl.LightningModule):
             ),
             nn.Sequential(
                 nn.Dropout(0.125),
-                nn.Linear(self.hidden_dim, self.n_classes),
+                nn.Linear(self.hidden_dim, 2),
                 nn.Softmax(dim=-1)
             )
         ])
@@ -113,54 +200,8 @@ class MyModel(pl.LightningModule):
         x = self.nets[1](x[:,-1,:])
         return x
 
-    def training_step(self, batch, batch_idx):
-        X, y = batch
-        y_pred = self(X)
-        loss = self.loss_fn(y_pred, y)
-        self.log('train_loss', loss, on_epoch=True)
-        return loss
-
-    @torch.no_grad()
-    def validation_step(self, batch, batch_idx):
-        X, y = batch
-        y_pred = self(X)
-        acc = self.acc(torch.argmax(y_pred, -1), y)
-        f1 = self.f1(torch.argmax(y_pred, -1), y)
-        loss = self.loss_fn(y_pred, y)
-        self.validation_step_losses.append(loss)
-        self.log('val_acc', acc, on_epoch=True)
-        self.log('val_f1', f1, on_epoch=True)
-        self.log('val_loss', loss, on_epoch=True)
-    
-    @torch.no_grad()
-    def test_step(self, batch, batch_idx):
-        X, y = batch
-        y_pred = self(X)
-        acc = self.acc(torch.argmax(y_pred, -1), y)
-        score = self.f1(torch.argmax(y_pred, -1), y)
-        loss = self.loss_fn(y_pred, y)
-        precision = self.prec(torch.argmax(y_pred, -1), y)
-        recall = self.rec(torch.argmax(y_pred, -1), y)
-        self.log('test_acc', acc, on_epoch=True)
-        self.log('test_f1', score, on_epoch=True)
-        self.log('test_loss', loss, on_epoch=True)
-        self.log('test_precision', precision, on_epoch=True)
-        self.log('test_recall', recall, on_epoch=True)
-
-    def on_validation_epoch_start(self) -> None:
-        self.validation_step_losses = []
-
-    def on_validation_epoch_end(self):
-        loss = torch.stack(self.validation_step_losses).mean(dim=0)
-        self.scheduler.step(loss)
-
-    def configure_optimizers(self):
-        optimizer = torch.optim.Adam(self.parameters(), lr=0.002, weight_decay=0.01)
-        self.scheduler = ReduceLROnPlateau(optimizer, 'min')
-        return optimizer
-
 class PositionalEncoding(nn.Module):
-    def __init__(self, d_model, max_len=5000):
+    def __init__(self, d_model, max_len=30):
         """
         Args
             d_model: Hidden dimensionality of the input.
@@ -185,95 +226,45 @@ class PositionalEncoding(nn.Module):
         x = x + self.pe[:, : x.size(1)]
         return x
 
-class MyModel2(pl.LightningModule):
-    def __init__(self, input_dim: int, hidden_dim: int, n_classes: int, input_limit: slice | None = None) -> None:
-        super().__init__()
-        self.input_limit = input_limit
-        if self.input_limit is not None:
-            self.input_dim = len(range(*self.input_limit.indices(input_dim)))
-        else:
-            self.input_dim = input_dim
+class MyTransformer(MyClassifier):
+    def __init__(
+            self,
+            hidden_dim: int = 512,
+            n_heads: int = 8,
+            transformer_layers: int = 6,
+            input_dim: int = 782,
+            lr: float = 1e-5,
+            weight_decay: float = 0.01,
+            class_ratios: torch.Tensor | None = None,
+            input_limit: slice | None = None
+    ) -> None:
+        super().__init__(input_dim, lr, weight_decay, class_ratios, input_limit)
         self.hidden_dim = hidden_dim
-        self.n_classes = n_classes
-        self.loss_fn = nn.CrossEntropyLoss()
-        self.f1 = torchmetrics.F1Score('multiclass', num_classes=2, average='macro')
-        self.acc = torchmetrics.Accuracy('multiclass', num_classes=2, average='macro')
-        self.prec = torchmetrics.Precision('multiclass', num_classes=2, average='macro')
-        self.rec = torchmetrics.Recall('multiclass', num_classes=2, average='macro')
+        self.n_heads = n_heads
+        self.transformer_layers = transformer_layers
 
-        self.nets = nn.ModuleList([
-            nn.Sequential(
-                nn.Linear(self.input_dim, 384),
-                nn.Dropout(0.125),
-                nn.Tanh(),
-                nn.Linear(384, self.hidden_dim),
-                nn.Dropout(0.125),
-                nn.Tanh(),
-                nn.LSTM(self.hidden_dim, self.hidden_dim, num_layers=1, batch_first=True)
-            ),
-            nn.Sequential(
-                nn.Dropout(0.125),
-                nn.Linear(self.hidden_dim, self.n_classes),
-                nn.Softmax(dim=-1)
-            )
-        ])
-    
+        self.input_net = nn.Sequential(
+            nn.Linear(self.input_dim, self.hidden_dim)
+        )
+        self.positional_encoding = PositionalEncoding(self.hidden_dim)
+        self.transformer = nn.TransformerEncoder(nn.TransformerEncoderLayer(self.hidden_dim, self.n_heads, batch_first=True), self.transformer_layers)
+        self.output_net = nn.Sequential(
+            nn.Linear(self.hidden_dim, 2),
+            nn.Softmax(dim=-1)
+        )
+
     def forward(self, x):
         if self.input_limit is not None:
             x = x[..., self.input_limit]
-        x, _ = self.nets[0](x)
-        x = self.nets[1](x[:,-1,:])
+        x = self.input_net(x)
+        x = self.positional_encoding(x)
+        x = self.transformer(x)[:, -1]
+        x = self.output_net(x)
         return x
-
-    def training_step(self, batch, batch_idx):
-        X, y = batch
-        y_pred = self(X)
-        loss = self.loss_fn(y_pred, y)
-        self.log('train_loss', loss, on_epoch=True)
-        return loss
-
-    @torch.no_grad()
-    def validation_step(self, batch, batch_idx):
-        X, y = batch
-        y_pred = self(X)
-        acc = self.acc(torch.argmax(y_pred, -1), y)
-        f1 = self.f1(torch.argmax(y_pred, -1), y)
-        loss = self.loss_fn(y_pred, y)
-        self.validation_step_losses.append(loss)
-        self.log('val_acc', acc, on_epoch=True)
-        self.log('val_f1', f1, on_epoch=True)
-        self.log('val_loss', loss, on_epoch=True)
-    
-    @torch.no_grad()
-    def test_step(self, batch, batch_idx):
-        X, y = batch
-        y_pred = self(X)
-        acc = self.acc(torch.argmax(y_pred, -1), y)
-        score = self.f1(torch.argmax(y_pred, -1), y)
-        loss = self.loss_fn(y_pred, y)
-        precision = self.prec(torch.argmax(y_pred, -1), y)
-        recall = self.rec(torch.argmax(y_pred, -1), y)
-        self.log('test_acc', acc, on_epoch=True)
-        self.log('test_f1', score, on_epoch=True)
-        self.log('test_loss', loss, on_epoch=True)
-        self.log('test_precision', precision, on_epoch=True)
-        self.log('test_recall', recall, on_epoch=True)
-
-    def on_validation_epoch_start(self) -> None:
-        self.validation_step_losses = []
-
-    def on_validation_epoch_end(self):
-        loss = torch.stack(self.validation_step_losses).mean(dim=0)
-        self.scheduler.step(loss)
-
-    def configure_optimizers(self):
-        optimizer = torch.optim.Adam(self.parameters(), lr=0.002, weight_decay=0.01)
-        self.scheduler = ReduceLROnPlateau(optimizer, 'min')
-        return optimizer
 
 def cross_validate(
         model_class: type,
-        model_params: Tuple,
+        model_params: dict,
         ds: Dataset,
         groups: torch.Tensor,
         use_weights: bool = False,
@@ -292,7 +283,7 @@ def cross_validate(
             class_ratio = train_ds[:][1].unique(return_counts=True)[1] / len(train_ds)
             weight = torch.pow(class_ratio * class_ratio.shape[0], -1)
             model_params += (weight,)
-        model = model_class(*model_params)
+        model = model_class(**model_params)
 
         trainer = train_model(model, train_ds, val_ds, precision, batch_size, max_epochs, max_time, num_workers, False, deterministic)
         test_results = test_model(test_ds, None, trainer, precision, batch_size, num_workers, False, deterministic)
@@ -411,19 +402,20 @@ def save_shift(model: pl.LightningModule, test_ds: Dataset, crisis_names: Iterab
 def main():
     deterministic = True
     end_to_end = False
+    text_samples = 100
 
     if deterministic:
         seed_everything(42, workers=True)
 
     DAYS_DF_PATH = 'saved_objects/days_df.feather'
-    POSTS_DF_PATH = 'saved_objects/posts_df.feather'
-    EMBEDDINGS_PATH = 'saved_objects/embeddings.pt'
+    POSTS_DF_PATH = 'saved_objects/posts_df' + str(text_samples) + '.feather'
+    EMBEDDINGS_PATH = 'saved_objects/embeddings' + str(text_samples) + '.pt'
 
     if end_to_end or not (os.path.isfile(DAYS_DF_PATH) and os.path.isfile(POSTS_DF_PATH)):
 
         data = get_data_with_dates(get_all_data())
 
-        days_df, text_df = load_data(data['path'].to_list(), data['Data'].to_list(), 100, True)
+        days_df, text_df = load_data(data['path'].to_list(), data['Data'].to_list(), text_samples, True)
         days_df.to_feather(DAYS_DF_PATH)
         text_df.to_feather(POSTS_DF_PATH)
 
@@ -465,13 +457,13 @@ def main():
     # df.to_csv('saved_objects/prediction_results.csv')
 
     # train_ds, test_ds, val_ds = split_dataset(ds, groups)
-    # model = MyModel(782, 128, 2)
-    # trainer = train_model(model, train_ds, val_ds, precision='32', deterministic=deterministic)
-    # test_model(test_ds, trainer=trainer, precision='32', deterministic=deterministic)
+    # model = MyTransformer(hidden_dim=256)
+    # trainer = train_model(model, train_ds, val_ds, precision='bf16-mixed', deterministic=deterministic)
+    # test_model(test_ds, trainer=trainer, precision='bf16-mixed', deterministic=deterministic)
 
-    # print(test_shift(model, test_ds))
+    # print(test_shift(model, test_ds, True))
 
-    cross_validate(MyModel, (782, 128, 2, slice(14, 782)), ds, groups, n_splits=5, precision='32', deterministic=deterministic)
+    cross_validate(MyTransformer, {'hidden_dim': 256}, ds, groups, n_splits=5, precision='bf16-mixed', deterministic=deterministic)
 
 if __name__ == '__main__':
     main()

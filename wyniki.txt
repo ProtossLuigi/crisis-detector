@@ -64,3 +64,207 @@ test_recall       0.139252
 │        test_recall        │    0.48901551961898804    │
 └───────────────────────────┴───────────────────────────┘
 
+LSTM - najlepsze podejście:
+   test_acc   test_f1  test_loss  test_precision  test_recall  test_shift_mean  test_shift_std
+0  0.793193  0.791991   0.528759        0.791781     0.793193         3.277778        5.062034
+1  0.762726  0.755530   0.536790        0.756047     0.762726         6.444445        9.331933
+2  0.712994  0.711298   0.570461        0.712786     0.712994         7.055555        8.953949
+3  0.742436  0.738809   0.549847        0.741390     0.742436         7.666667       11.636656
+4  0.734101  0.727150   0.571492        0.749668     0.734101         8.666667       11.545307
+Means:
+test_acc           0.749090
+test_f1            0.744956
+test_loss          0.551470
+test_precision     0.750334
+test_recall        0.749090
+test_shift_mean    6.622222
+test_shift_std     9.305976
+dtype: float64
+Standard deviation:
+test_acc           0.030426
+test_f1            0.030870
+test_loss          0.019336
+test_precision     0.028464
+test_recall        0.030426
+test_shift_mean    2.041771
+test_shift_std     2.673122
+
+LSTM - 10 tekstów:
+   test_loss  test_acc  test_f1_neg  test_f1_pos  test_precision_neg  test_precision_pos  test_recall_neg  test_recall_pos  test_shift_mean  test_shift_std
+0   0.692737  0.531955     0.232858     0.659347            0.740884            0.524472          0.17109         0.924710        20.055555       13.648841
+1   0.692580  0.577982     0.403170     0.665608            0.651624            0.542099          0.29794         0.863858         1.722222        1.447333
+2   0.693141  0.512939     0.677715     0.000000            0.512939            0.000000          1.00000         0.000000         1.944444        2.071437
+3   0.691754  0.512397     0.677321     0.000000            0.512397            0.000000          1.00000         0.000000        29.500000        1.200490
+4   0.692837  0.501855     0.667760     0.000000            0.501855            0.000000          1.00000         0.000000        29.833334        0.514496
+Means:
+test_loss              0.692610
+test_acc               0.527426
+test_f1_neg            0.531765
+test_f1_pos            0.264991
+test_precision_neg     0.583940
+test_precision_pos     0.213314
+test_recall_neg        0.693806
+test_recall_pos        0.357714
+test_shift_mean       16.611111
+test_shift_std         3.776519
+dtype: float64
+Standard deviation:
+test_loss              0.000520
+test_acc               0.030274
+test_f1_neg            0.204245
+test_f1_pos            0.362861
+test_precision_neg     0.107366
+test_precision_pos     0.292159
+test_recall_neg        0.421665
+test_recall_pos        0.490292
+test_shift_mean       14.049955
+test_shift_std         5.546888
+
+LSTM - 50 tekstów:
+   test_loss  test_acc  test_f1_neg  test_f1_pos  test_precision_neg  test_precision_pos  test_recall_neg  test_recall_pos  test_shift_mean  test_shift_std
+0   0.692737  0.531955     0.232858     0.659347            0.740884            0.524472          0.17109         0.924710        20.055555       13.648841
+1   0.692580  0.577982     0.403170     0.665608            0.651624            0.542099          0.29794         0.863858         1.722222        1.447333
+2   0.693141  0.512939     0.677715     0.000000            0.512939            0.000000          1.00000         0.000000         1.944444        2.071437
+3   0.691754  0.512397     0.677321     0.000000            0.512397            0.000000          1.00000         0.000000        29.500000        1.200490
+4   0.692837  0.501855     0.667760     0.000000            0.501855            0.000000          1.00000         0.000000        29.833334        0.514496
+Means:
+test_loss              0.692610
+test_acc               0.527426
+test_f1_neg            0.531765
+test_f1_pos            0.264991
+test_precision_neg     0.583940
+test_precision_pos     0.213314
+test_recall_neg        0.693806
+test_recall_pos        0.357714
+test_shift_mean       16.611111
+test_shift_std         3.776519
+dtype: float64
+Standard deviation:
+test_loss              0.000520
+test_acc               0.030274
+test_f1_neg            0.204245
+test_f1_pos            0.362861
+test_precision_neg     0.107366
+test_precision_pos     0.292159
+test_recall_neg        0.421665
+test_recall_pos        0.490292
+test_shift_mean       14.049955
+test_shift_std         5.546888
+
+LSTM - 100 tekstów:
+   test_loss  test_acc  test_f1_neg  test_f1_pos  test_precision_neg  test_precision_pos  test_recall_neg  test_recall_pos  test_shift_mean  test_shift_std
+0   0.692737  0.531955     0.232858     0.659347            0.740884            0.524472          0.17109         0.924710        20.055555       13.648841
+1   0.692580  0.577982     0.403170     0.665608            0.651624            0.542099          0.29794         0.863858         1.722222        1.447333
+2   0.693141  0.512939     0.677715     0.000000            0.512939            0.000000          1.00000         0.000000         1.944444        2.071437
+3   0.691754  0.512397     0.677321     0.000000            0.512397            0.000000          1.00000         0.000000        29.500000        1.200490
+4   0.692837  0.501855     0.667760     0.000000            0.501855            0.000000          1.00000         0.000000        29.833334        0.514496
+Means:
+test_loss              0.692610
+test_acc               0.527426
+test_f1_neg            0.531765
+test_f1_pos            0.264991
+test_precision_neg     0.583940
+test_precision_pos     0.213314
+test_recall_neg        0.693806
+test_recall_pos        0.357714
+test_shift_mean       16.611111
+test_shift_std         3.776519
+dtype: float64
+Standard deviation:
+test_loss              0.000520
+test_acc               0.030274
+test_f1_neg            0.204245
+test_f1_pos            0.362861
+test_precision_neg     0.107366
+test_precision_pos     0.292159
+test_recall_neg        0.421665
+test_recall_pos        0.490292
+test_shift_mean       14.049955
+test_shift_std         5.546888
+
+LSTM - 200 tekstów:
+   test_loss  test_acc  test_f1_neg  test_f1_pos  test_precision_neg  test_precision_pos  test_recall_neg  test_recall_pos  test_shift_mean  test_shift_std
+0   0.692737  0.531955     0.232858     0.659347            0.740884            0.524472          0.17109         0.924710        20.055555       13.648841
+1   0.692580  0.577982     0.403170     0.665608            0.651624            0.542099          0.29794         0.863858         1.722222        1.447333
+2   0.693141  0.512939     0.677715     0.000000            0.512939            0.000000          1.00000         0.000000         1.944444        2.071437
+3   0.691754  0.512397     0.677321     0.000000            0.512397            0.000000          1.00000         0.000000        29.500000        1.200490
+4   0.692837  0.501855     0.667760     0.000000            0.501855            0.000000          1.00000         0.000000        29.833334        0.514496
+Means:
+test_loss              0.692610
+test_acc               0.527426
+test_f1_neg            0.531765
+test_f1_pos            0.264991
+test_precision_neg     0.583940
+test_precision_pos     0.213314
+test_recall_neg        0.693806
+test_recall_pos        0.357714
+test_shift_mean       16.611111
+test_shift_std         3.776519
+dtype: float64
+Standard deviation:
+test_loss              0.000520
+test_acc               0.030274
+test_f1_neg            0.204245
+test_f1_pos            0.362861
+test_precision_neg     0.107366
+test_precision_pos     0.292159
+test_recall_neg        0.421665
+test_recall_pos        0.490292
+test_shift_mean       14.049955
+test_shift_std         5.546888
+
+transformer time series classifier - pierwsze podejście:
+   test_acc   test_f1  test_loss  test_precision  test_recall  test_shift_mean  test_shift_std
+0  0.815066  0.813355   0.486282        0.815142     0.815066         4.000000        6.730091
+1  0.751517  0.746625   0.532791        0.750529     0.751517         4.833333        6.185847
+2  0.716560  0.706736   0.561713        0.743352     0.716560         9.944445       10.183448
+3  0.760025  0.756745   0.530783        0.764610     0.760025         8.055555       10.832806
+4  0.753761  0.747449   0.573707        0.765274     0.753761         6.444445        6.335913
+Means:
+test_acc           0.759386
+test_f1            0.754182
+test_loss          0.537055
+test_precision     0.767781
+test_recall        0.759386
+test_shift_mean    6.655556
+test_shift_std     8.053621
+dtype: float64
+Standard deviation:
+test_acc           0.035456
+test_f1            0.038280
+test_loss          0.033863
+test_precision     0.028079
+test_recall        0.035456
+test_shift_mean    2.407999
+test_shift_std     2.261132
+
+transformer time series classifier - najlepsze podejście:
+   test_loss  test_acc  test_f1_neg  test_f1_pos  test_precision_neg  test_precision_pos  test_recall_neg  test_recall_pos  test_shift_mean  test_shift_std
+0   0.553289  0.816729     0.797923     0.831565            0.909522            0.755540         0.713767         0.926713         4.222222        7.734990
+1   0.530561  0.754128     0.773060     0.724054            0.726972            0.799376         0.835063         0.672316         4.000000        6.534974
+2   0.512834  0.789279     0.810741     0.762297            0.754969            0.843300         0.878640         0.698851         5.555555        7.196586
+3   0.526519  0.769513     0.748554     0.780274            0.804312            0.744638         0.711896         0.824311         6.777778        9.091402
+4   0.555951  0.751391     0.719638     0.774265            0.790624            0.721975         0.663558         0.836999         6.388889        9.834745
+Means:
+test_loss             0.535831
+test_acc              0.776208
+test_f1_neg           0.769983
+test_f1_pos           0.774491
+test_precision_neg    0.797280
+test_precision_pos    0.772966
+test_recall_neg       0.760585
+test_recall_pos       0.791838
+test_shift_mean       5.388889
+test_shift_std        8.078539
+dtype: float64
+Standard deviation:
+test_loss             0.018391
+test_acc              0.027208
+test_f1_neg           0.036896
+test_f1_pos           0.038677
+test_precision_neg    0.069687
+test_precision_pos    0.048349
+test_recall_neg       0.091462
+test_recall_pos       0.105140
+test_shift_mean       1.249691
+test_shift_std        1.359100

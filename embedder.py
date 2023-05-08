@@ -114,6 +114,7 @@ def main():
 
     deterministic = True
     end_to_end = False
+    batch_size = 64
 
     if deterministic:
         seed_everything(42)
@@ -145,10 +146,10 @@ def main():
     weight = None
 
     model = TextEmbedder(pretrained_name, weight)
-    trainer = train_model(model, train_ds, val_ds, batch_size=64, max_epochs=10, deterministic=deterministic)
+    trainer = train_model(model, train_ds, val_ds, batch_size=batch_size, max_epochs=10, deterministic=deterministic)
     # model = TextEmbedder.load_from_checkpoint('checkpoints/epoch=0-step=1828.ckpt', pretrained_name=pretrained_name)
-    test_model(train_ds, trainer=trainer, batch_size=64)
-    test_model(test_ds, trainer=trainer, batch_size=64)
+    test_model(train_ds, trainer=trainer, batch_size=batch_size)
+    test_model(test_ds, trainer=trainer, batch_size=batch_size)
     
     # cross_validate(TextEmbedder, (pretrained_name,), ds, groups, use_weights=True, n_splits=5, batch_size=64, max_epochs=1, deterministic=deterministic)
     
