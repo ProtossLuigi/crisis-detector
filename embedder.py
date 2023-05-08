@@ -14,7 +14,7 @@ from transformers import AutoModelForSequenceClassification, AutoConfig, AutoTok
 from data_tools import load_data, DictDataset, load_text_data, get_verified_data, get_data_with_dates
 from training_tools import train_model, test_model, cross_validate, split_dataset
 
-torch.set_float32_matmul_precision('high')
+torch.set_float32_matmul_precision('medium')
 
 class TextEmbedder(pl.LightningModule):
     def __init__(self, pretrained_name: str, weight: torch.Tensor | None = None, *args: Any, **kwargs: Any) -> None:
@@ -51,7 +51,7 @@ class TextEmbedder(pl.LightningModule):
         acc = self.acc(torch.argmax(y_pred, -1), y_true)
         f1 = self.f1(torch.argmax(y_pred, -1), y_true)
         loss = self.loss_fn(y_pred, y_true)
-        self.validation_step_losses.append(loss)
+        # self.validation_step_losses.append(loss)
         self.log('val_acc', acc, on_epoch=True)
         self.log('val_f1', f1, on_epoch=True)
         self.log('val_loss', loss, on_epoch=True)
@@ -110,7 +110,7 @@ def create_token_dataset(df: pd.DataFrame, tokenizer_name: str, batch_size: int 
 def main():
     TEXTS_PATH = 'saved_objects/texts_df.feather'
     DATASET_PATH = 'saved_objects/token_ds.pt'
-    pretrained_name = 'sdadas/polish-distilroberta'
+    pretrained_name = 'xlm-roberta-base'
 
     deterministic = True
     end_to_end = False
