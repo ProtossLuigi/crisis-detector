@@ -6,7 +6,7 @@ from tqdm import tqdm
 import torch
 from torch.utils.data import Dataset, Subset, DataLoader
 import lightning as pl
-from lightning.pytorch.callbacks import ModelCheckpoint, EarlyStopping
+from lightning.pytorch.callbacks import ModelCheckpoint, EarlyStopping, StochasticWeightAveraging
 from sklearn.model_selection import GroupKFold, StratifiedGroupKFold
 
 def split_dataset(ds: Dataset, groups: torch.Tensor, n_splits: int = 10, validate: bool = True, stratify: bool = False
@@ -58,7 +58,8 @@ def init_trainer(precision: str = 'bf16-mixed', early_stopping: bool = True, max
     callbacks = [
         checkpoint_callback,
         EarlyStopping(monitor='val_f1', mode='max', patience=20)
-    ] if early_stopping else None
+    ] if early_stopping else []
+    # callbacks.append(StochasticWeightAveraging(swa_lrs=1e-2))
     trainer = pl.Trainer(
         precision=precision,
         logger=False,

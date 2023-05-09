@@ -1,4 +1,4 @@
-from typing import List, Tuple, Iterable, Any
+from typing import Iterator, List, Optional, Sized, Tuple, Iterable, Any
 from warnings import warn
 import os
 import json
@@ -9,7 +9,7 @@ from tqdm import tqdm
 
 import torch
 from torch import nn
-from torch.utils.data import Dataset, DataLoader, TensorDataset
+from torch.utils.data import Dataset, DataLoader, TensorDataset, Sampler
 from torch.optim.lr_scheduler import ReduceLROnPlateau
 import torchmetrics
 import lightning as pl
@@ -35,7 +35,7 @@ def add_embeddings(days_df: pd.DataFrame, text_df: pd.DataFrame, embeddings: Lis
     days_df.loc[:, 'embedding'].iloc[days_df['embedding'].isna()] = pd.Series(np.zeros((days_df['embedding'].isna().sum(), 768)).tolist())
     return days_df
 
-def create_dataset(df: pd.DataFrame, sequence_len: int = 30) -> Tuple[Dataset, torch.Tensor]:
+def create_dataset(df: pd.DataFrame, sequence_len: int = 30) -> Tuple[TensorDataset, torch.Tensor]:
     numeric_cols = ['brak', 'pozytywny', 'neutralny', 'negatywny', 'suma']
     X = torch.tensor(df[numeric_cols].values, dtype=torch.long)
     y = torch.tensor(df['label'], dtype=torch.long)
@@ -72,6 +72,62 @@ def create_dataset(df: pd.DataFrame, sequence_len: int = 30) -> Tuple[Dataset, t
     groups_seq = torch.tensor(groups_seq)
 
     return TensorDataset(X_seq, y_seq), groups_seq
+    
+class ShiftMetric(torchmetrics.Metric):
+    is_differentiable = False
+    higher_is_better = False
+    full_state_update = False
+
+    def __init__(self, crisis_threshold: int = 1, absolute: bool = True, average: bool = False, **kwargs: Any) -> None:
+        super().__init__(**kwargs)
+        self.threshold = crisis_threshold
+        self.absolute = absolute
+        self.average = average
+        self.add_state('shifts', default=[], dist_reduce_fx='cat')
+    
+    def update(self, preds: torch.Tensor, target: torch.Tensor):
+        preds, target = preds.long(), target.long()
+        diffs = (torch.diff(target, prepend=torch.tensor([0], dtype=target.dtype, device=target.device)) == 1).nonzero().squeeze(1)
+        assert diffs.shape[0] == 1
+        crisis_start = diffs[0]
+        pred_starts = (torch.diff(
+                preds,
+                prepend=torch.tensor([0], dtype=preds.dtype, device=preds.device),
+                append=torch.tensor([1] * self.threshold, dtype=preds.dtype, device=preds.device)
+            ) == 1).nonzero().squeeze(1)
+        for pred_start in pred_starts:
+            if preds[pred_start:pred_start + self.threshold].all():
+                shift = pred_start - crisis_start
+                if self.absolute:
+                    shift = shift.abs()
+                self.shifts.append(shift)
+                return
+        raise RuntimeError('I broke Cauchy\'s theorem.')
+    
+    def compute(self) -> torch.Tensor:
+        shifts = torch.tensor(self.shifts, device=self.device)
+        if self.average:
+            return shifts.float().mean()
+        else:
+            return shifts
+
+class TopicSampler(Sampler[List[int]]):
+    def __init__(self, data_source: Dataset) -> None:
+        super().__init__(data_source)
+        self.data_source = data_source
+        labels = self.data_source[:][1]
+        self.topic_idx = (torch.diff(
+                labels,
+                prepend=torch.tensor([1], dtype=labels.dtype, device=labels.device),
+                append=torch.tensor([0], dtype=labels.dtype, device=labels.device)
+            ) == -1).nonzero().squeeze(1)
+    
+    def __iter__(self) -> Iterator[List[int]]:
+        for i in range(self.topic_idx.shape[0] - 1):
+            yield list(range(self.topic_idx[i], self.topic_idx[i+1]))
+    
+    def __len__(self) -> int:
+        return self.topic_idx.shape[0] - 1
 
 class MyClassifier(pl.LightningModule):
     def __init__(
@@ -80,7 +136,8 @@ class MyClassifier(pl.LightningModule):
             lr: float = 0.001,
             weight_decay: float = 0.01,
             class_ratios: torch.Tensor | None = None,
-            input_limit: slice | None = None
+            input_limit: slice | None = None,
+            print_test_samples: bool = False
     ) -> None:
         super().__init__()
         self.input_limit = input_limit
@@ -90,6 +147,7 @@ class MyClassifier(pl.LightningModule):
             self.input_dim = input_dim
         self.lr = lr
         self.weight_decay = weight_decay
+        self.print_test_samples = print_test_samples
         if class_ratios is None:
             self.class_weights = None
         else:
@@ -100,6 +158,7 @@ class MyClassifier(pl.LightningModule):
         self.acc = torchmetrics.Accuracy('multiclass', num_classes=2, average='micro')
         self.prec = torchmetrics.Precision('multiclass', num_classes=2, average=None)
         self.rec = torchmetrics.Recall('multiclass', num_classes=2, average=None)
+        self.shift = ShiftMetric(crisis_threshold=5)
     
     def forward(self, x):
         raise NotImplementedError()
@@ -125,13 +184,25 @@ class MyClassifier(pl.LightningModule):
         else:
             raise TypeError(f'Invalid batch type {type(batch)}. Expected tuple, list or dict.')
         y_pred = self(X)
+        loss = self.loss_fn(y_pred, y)
+        self.validation_step_losses.append(loss)
+        self.acc.update(torch.argmax(y_pred, -1), y)
+        self.f1.update(torch.argmax(y_pred, -1), y)
+        self.log('val_loss', loss, on_epoch=True)
+
+    def on_validation_epoch_start(self) -> None:
+        self.validation_step_losses = []
+
+    def on_validation_epoch_end(self) -> None:
+        loss = torch.stack(self.validation_step_losses).mean(dim=0)
+        self.scheduler.step(loss)
         metrics = {
-            'val_loss': self.loss_fn(y_pred, y),
-            'val_acc': self.acc(torch.argmax(y_pred, -1), y),
-            'val_f1': self.f1(torch.argmax(y_pred, -1), y).mean()
+            'val_acc': self.acc.compute(),
+            'val_f1': self.f1.compute().mean()
         }
-        self.validation_step_losses.append(metrics['val_loss'])
-        self.log_dict(metrics, on_epoch=True)
+        self.log_dict(metrics)
+        self.acc.reset()
+        self.f1.reset()
     
     @torch.no_grad()
     def test_step(self, batch, batch_idx):
@@ -142,21 +213,30 @@ class MyClassifier(pl.LightningModule):
         else:
             raise TypeError(f'Invalid batch type {type(batch)}. Expected tuple, list or dict.')
         y_pred = self(X)
+        if self.print_test_samples:
+            print(torch.argmax(y_pred, -1) - y)
+        self.acc.update(torch.argmax(y_pred, -1), y)
+        self.f1.update(torch.argmax(y_pred, -1), y)
+        self.prec.update(torch.argmax(y_pred, -1), y)
+        self.rec.update(torch.argmax(y_pred, -1), y)
+        self.shift.update(torch.argmax(y_pred, -1), y)
+        self.log('test_loss', self.loss_fn(y_pred, y), on_epoch=True)
+    
+    def on_test_epoch_end(self) -> None:
         metrics = {
-            'test_loss': self.loss_fn(y_pred, y),
-            'test_acc': self.acc(torch.argmax(y_pred, -1), y)
+            'test_acc': self.acc.compute()
         }
-        metrics['test_f1_neg'], metrics['test_f1_pos'] = self.f1(torch.argmax(y_pred, -1), y)
-        metrics['test_precision_neg'], metrics['test_precision_pos'] = self.prec(torch.argmax(y_pred, -1), y)
-        metrics['test_recall_neg'], metrics['test_recall_pos'] = self.rec(torch.argmax(y_pred, -1), y)
+        metrics['test_f1_neg'], metrics['test_f1_pos'] = self.f1.compute()
+        metrics['test_precision_neg'], metrics['test_precision_pos'] = self.prec.compute()
+        metrics['test_recall_neg'], metrics['test_recall_pos'] = self.rec.compute()
+        shift = self.shift.compute().float()
+        metrics['test_shift'], metrics['test_shift_std'] = shift.mean(), shift.std()
         self.log_dict(metrics)
-
-    def on_validation_epoch_start(self) -> None:
-        self.validation_step_losses = []
-
-    def on_validation_epoch_end(self):
-        loss = torch.stack(self.validation_step_losses).mean(dim=0)
-        self.scheduler.step(loss)
+        self.acc.reset()
+        self.f1.reset()
+        self.prec.reset()
+        self.rec.reset()
+        self.shift.reset()
 
     def configure_optimizers(self):
         optimizer = torch.optim.Adam(self.parameters(), lr=self.lr, weight_decay=self.weight_decay)
@@ -171,9 +251,10 @@ class MyLSTM(MyClassifier):
             lr: float = 0.002,
             weight_decay: float = 0.01,
             class_ratios: torch.Tensor | None = None,
-            input_limit: slice | None = None
+            input_limit: slice | None = None,
+            print_test_samples: bool = False
     ) -> None:
-        super().__init__(input_dim, lr, weight_decay, class_ratios, input_limit)
+        super().__init__(input_dim, lr, weight_decay, class_ratios, input_limit, print_test_samples)
         self.hidden_dim = hidden_dim
 
         self.nets = nn.ModuleList([
@@ -229,26 +310,36 @@ class PositionalEncoding(nn.Module):
 class MyTransformer(MyClassifier):
     def __init__(
             self,
-            hidden_dim: int = 512,
+            hidden_dim: int = 128,
             n_heads: int = 8,
             transformer_layers: int = 6,
             input_dim: int = 782,
             lr: float = 1e-5,
             weight_decay: float = 0.01,
             class_ratios: torch.Tensor | None = None,
-            input_limit: slice | None = None
+            input_limit: slice | None = None,
+            print_test_samples: bool = False
     ) -> None:
-        super().__init__(input_dim, lr, weight_decay, class_ratios, input_limit)
+        super().__init__(input_dim, lr, weight_decay, class_ratios, input_limit, print_test_samples)
         self.hidden_dim = hidden_dim
         self.n_heads = n_heads
         self.transformer_layers = transformer_layers
 
         self.input_net = nn.Sequential(
-            nn.Linear(self.input_dim, self.hidden_dim)
+            nn.Linear(self.input_dim, 384),
+            nn.Dropout(.1),
+            nn.Tanh(),
+            nn.Linear(384, 256),
+            nn.Dropout(.1),
+            nn.Tanh(),
+            nn.Linear(256, self.hidden_dim),
+            nn.Dropout(.1),
+            nn.Tanh(),
         )
         self.positional_encoding = PositionalEncoding(self.hidden_dim)
-        self.transformer = nn.TransformerEncoder(nn.TransformerEncoderLayer(self.hidden_dim, self.n_heads, batch_first=True), self.transformer_layers)
+        self.transformer = nn.TransformerEncoder(nn.TransformerEncoderLayer(self.hidden_dim, self.n_heads, activation=nn.functional.leaky_relu, batch_first=True), self.transformer_layers)
         self.output_net = nn.Sequential(
+            nn.Dropout(.1),
             nn.Linear(self.hidden_dim, 2),
             nn.Softmax(dim=-1)
         )
@@ -286,10 +377,13 @@ def cross_validate(
         model = model_class(**model_params)
 
         trainer = train_model(model, train_ds, val_ds, precision, batch_size, max_epochs, max_time, num_workers, False, deterministic)
-        test_results = test_model(test_ds, None, trainer, precision, batch_size, num_workers, False, deterministic)
-        test_shift_mean, test_shift_std = test_shift(model, test_ds)
-        test_results['test_shift_mean'] = test_shift_mean
-        test_results['test_shift_std'] = test_shift_std
+        # test_results = test_model(test_ds, None, trainer, precision, batch_size, num_workers, False, deterministic)
+
+        test_dl = DataLoader(test_ds, batch_sampler=TopicSampler(test_ds), num_workers=num_workers, pin_memory=True)
+        test_results = trainer.test(dataloaders=test_dl, ckpt_path='best', verbose=False)[0]
+        # test_shift_mean, test_shift_std = test_shift(model, test_ds)
+        # test_results['test_shift_mean'] = test_shift_mean
+        # test_results['test_shift_std'] = test_shift_std
         stats.append(test_results)
     stats = pd.DataFrame(stats)
     print(stats)
@@ -402,7 +496,7 @@ def save_shift(model: pl.LightningModule, test_ds: Dataset, crisis_names: Iterab
 def main():
     deterministic = True
     end_to_end = False
-    text_samples = 100
+    text_samples = 50
 
     if deterministic:
         seed_everything(42, workers=True)
@@ -457,13 +551,13 @@ def main():
     # df.to_csv('saved_objects/prediction_results.csv')
 
     # train_ds, test_ds, val_ds = split_dataset(ds, groups)
-    # model = MyTransformer(hidden_dim=256)
+    # model = MyTransformer(hidden_dim=128)
     # trainer = train_model(model, train_ds, val_ds, precision='bf16-mixed', deterministic=deterministic)
     # test_model(test_ds, trainer=trainer, precision='bf16-mixed', deterministic=deterministic)
 
     # print(test_shift(model, test_ds, True))
 
-    cross_validate(MyTransformer, {'hidden_dim': 256}, ds, groups, n_splits=5, precision='bf16-mixed', deterministic=deterministic)
+    cross_validate(MyTransformer, {}, ds, groups, n_splits=5, precision='bf16-mixed', deterministic=deterministic)
 
 if __name__ == '__main__':
     main()
