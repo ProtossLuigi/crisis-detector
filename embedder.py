@@ -51,7 +51,7 @@ class TextEmbedder(pl.LightningModule):
         acc = self.acc(torch.argmax(y_pred, -1), y_true)
         f1 = self.f1(torch.argmax(y_pred, -1), y_true)
         loss = self.loss_fn(y_pred, y_true)
-        # self.validation_step_losses.append(loss)
+        self.validation_step_losses.append(loss)
         self.log('val_acc', acc, on_epoch=True)
         self.log('val_f1', f1, on_epoch=True)
         self.log('val_loss', loss, on_epoch=True)
@@ -75,16 +75,16 @@ class TextEmbedder(pl.LightningModule):
     def predict_step(self, batch: Any, batch_idx: int, dataloader_idx: int = 0) -> Any:
         return self(batch).hidden_states[0][:, 0, :]
     
-    # def on_validation_epoch_start(self) -> None:
-    #     self.validation_step_losses = []
+    def on_validation_epoch_start(self) -> None:
+        self.validation_step_losses = []
 
-    # def on_validation_epoch_end(self):
-    #     loss = torch.stack(self.validation_step_losses).mean(dim=0)
-    #     self.scheduler.step(loss)
+    def on_validation_epoch_end(self):
+        loss = torch.stack(self.validation_step_losses).mean(dim=0)
+        self.scheduler.step(loss)
 
     def configure_optimizers(self):
-        optimizer = torch.optim.RAdam(self.parameters(), lr=1e-5, weight_decay=0.01)
-        # self.scheduler = ReduceLROnPlateau(optimizer, 'min')
+        optimizer = torch.optim.Adam(self.parameters(), lr=1e-5, weight_decay=0.01)
+        self.scheduler = ReduceLROnPlateau(optimizer, 'min')
         return optimizer
 
 def create_token_dataset(df: pd.DataFrame, tokenizer_name: str, batch_size: int = 256, max_length: int | None = 256):
@@ -114,7 +114,7 @@ def main():
 
     deterministic = True
     end_to_end = False
-    batch_size = 64
+    batch_size = 128
 
     if deterministic:
         seed_everything(42)

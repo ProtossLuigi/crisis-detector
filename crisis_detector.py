@@ -78,7 +78,7 @@ class ShiftMetric(torchmetrics.Metric):
     higher_is_better = False
     full_state_update = False
 
-    def __init__(self, crisis_threshold: int = 1, absolute: bool = True, average: bool = False, **kwargs: Any) -> None:
+    def __init__(self, crisis_threshold: int = 5, absolute: bool = True, average: bool = False, **kwargs: Any) -> None:
         super().__init__(**kwargs)
         self.threshold = crisis_threshold
         self.absolute = absolute
@@ -100,6 +100,41 @@ class ShiftMetric(torchmetrics.Metric):
                 shift = pred_start - crisis_start
                 if self.absolute:
                     shift = shift.abs()
+                self.shifts.append(shift)
+                return
+        raise RuntimeError('I broke Cauchy\'s theorem.')
+    
+    def compute(self) -> torch.Tensor:
+        shifts = torch.tensor(self.shifts, device=self.device)
+        if self.average:
+            return shifts.float().mean()
+        else:
+            return shifts
+
+class Shift2Metric(torchmetrics.Metric):
+    is_differentiable = False
+    higher_is_better = False
+    full_state_update = False
+
+    def __init__(self, crisis_threshold: int = 5, average: bool = False, **kwargs: Any) -> None:
+        super().__init__(**kwargs)
+        self.threshold = crisis_threshold
+        self.average = average
+        self.add_state('shifts', default=[], dist_reduce_fx='cat')
+    
+    def update(self, preds: torch.Tensor, target: torch.Tensor):
+        preds, target = preds.long(), target.long()
+        diffs = (torch.diff(target, prepend=torch.tensor([0], dtype=target.dtype, device=target.device)) == 1).nonzero().squeeze(1)
+        assert diffs.shape[0] == 1
+        crisis_start = diffs[0]
+        pred_starts = (torch.diff(
+                preds,
+                prepend=torch.tensor([0], dtype=preds.dtype, device=preds.device),
+                append=torch.tensor([1] * self.threshold, dtype=preds.dtype, device=preds.device)
+            ) == 1).nonzero().squeeze(1)
+        for pred_start in pred_starts:
+            if preds[pred_start:pred_start + self.threshold].all():
+                shift = torch.max(pred_start - crisis_start, torch.tensor(0, dtype=torch.long, device=self.device))
                 self.shifts.append(shift)
                 return
         raise RuntimeError('I broke Cauchy\'s theorem.')
@@ -158,7 +193,8 @@ class MyClassifier(pl.LightningModule):
         self.acc = torchmetrics.Accuracy('multiclass', num_classes=2, average='micro')
         self.prec = torchmetrics.Precision('multiclass', num_classes=2, average=None)
         self.rec = torchmetrics.Recall('multiclass', num_classes=2, average=None)
-        self.shift = ShiftMetric(crisis_threshold=5)
+        self.shift = ShiftMetric()
+        self.shift2 = Shift2Metric()
     
     def forward(self, x):
         raise NotImplementedError()
@@ -220,6 +256,7 @@ class MyClassifier(pl.LightningModule):
         self.prec.update(torch.argmax(y_pred, -1), y)
         self.rec.update(torch.argmax(y_pred, -1), y)
         self.shift.update(torch.argmax(y_pred, -1), y)
+        self.shift2.update(torch.argmax(y_pred, -1), y)
         self.log('test_loss', self.loss_fn(y_pred, y), on_epoch=True)
     
     def on_test_epoch_end(self) -> None:
@@ -231,12 +268,15 @@ class MyClassifier(pl.LightningModule):
         metrics['test_recall_neg'], metrics['test_recall_pos'] = self.rec.compute()
         shift = self.shift.compute().float()
         metrics['test_shift'], metrics['test_shift_std'] = shift.mean(), shift.std()
+        shift = self.shift2.compute().float()
+        metrics['test_shift2'], metrics['test_shift2_std'] = shift.mean(), shift.std()
         self.log_dict(metrics)
         self.acc.reset()
         self.f1.reset()
         self.prec.reset()
         self.rec.reset()
         self.shift.reset()
+        self.shift2.reset()
 
     def configure_optimizers(self):
         optimizer = torch.optim.Adam(self.parameters(), lr=self.lr, weight_decay=self.weight_decay)
@@ -247,14 +287,10 @@ class MyLSTM(MyClassifier):
     def __init__(
             self,
             hidden_dim: int = 128,
-            input_dim: int = 782,
-            lr: float = 0.002,
-            weight_decay: float = 0.01,
-            class_ratios: torch.Tensor | None = None,
-            input_limit: slice | None = None,
-            print_test_samples: bool = False
+            **kwargs
     ) -> None:
-        super().__init__(input_dim, lr, weight_decay, class_ratios, input_limit, print_test_samples)
+        kwargs.setdefault('lr', 0.002)
+        super().__init__(**kwargs)
         self.hidden_dim = hidden_dim
 
         self.nets = nn.ModuleList([
@@ -313,14 +349,10 @@ class MyTransformer(MyClassifier):
             hidden_dim: int = 128,
             n_heads: int = 8,
             transformer_layers: int = 6,
-            input_dim: int = 782,
-            lr: float = 1e-5,
-            weight_decay: float = 0.01,
-            class_ratios: torch.Tensor | None = None,
-            input_limit: slice | None = None,
-            print_test_samples: bool = False
+            **kwargs
     ) -> None:
-        super().__init__(input_dim, lr, weight_decay, class_ratios, input_limit, print_test_samples)
+        kwargs.setdefault('lr', 1e-5)
+        super().__init__(**kwargs)
         self.hidden_dim = hidden_dim
         self.n_heads = n_heads
         self.transformer_layers = transformer_layers
@@ -550,14 +582,13 @@ def main():
     # df = df[['name', 'Data wydania', 'label_true', 'label_predict']].rename(columns={'Data wydania': 'date'})
     # df.to_csv('saved_objects/prediction_results.csv')
 
-    # train_ds, test_ds, val_ds = split_dataset(ds, groups)
-    # model = MyTransformer(hidden_dim=128)
-    # trainer = train_model(model, train_ds, val_ds, precision='bf16-mixed', deterministic=deterministic)
-    # test_model(test_ds, trainer=trainer, precision='bf16-mixed', deterministic=deterministic)
+    train_ds, test_ds, val_ds = split_dataset(ds, groups)
+    model = MyTransformer(print_test_samples=True)
+    trainer = train_model(model, train_ds, val_ds, precision='bf16-mixed', deterministic=deterministic)
+    test_dl = DataLoader(test_ds, batch_sampler=TopicSampler(test_ds), num_workers=10, pin_memory=True)
+    trainer.test(dataloaders=test_dl, ckpt_path='best', verbose=True)
 
-    # print(test_shift(model, test_ds, True))
-
-    cross_validate(MyTransformer, {}, ds, groups, n_splits=5, precision='bf16-mixed', deterministic=deterministic)
+    # cross_validate(MyTransformer, {}, ds, groups, n_splits=5, precision='bf16-mixed', deterministic=deterministic)
 
 if __name__ == '__main__':
     main()
