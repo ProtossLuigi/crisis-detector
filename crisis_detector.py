@@ -183,10 +183,7 @@ class MyClassifier(pl.LightningModule):
         self.lr = lr
         self.weight_decay = weight_decay
         self.print_test_samples = print_test_samples
-        if class_ratios is None:
-            self.class_weights = None
-        else:
-            self.class_weights = .5 / class_ratios
+        self.class_weights = .5 / class_ratios if class_ratios else None
 
         self.loss_fn = nn.CrossEntropyLoss(self.class_weights)
         self.f1 = torchmetrics.F1Score('multiclass', num_classes=2, average=None)
@@ -220,18 +217,11 @@ class MyClassifier(pl.LightningModule):
         else:
             raise TypeError(f'Invalid batch type {type(batch)}. Expected tuple, list or dict.')
         y_pred = self(X)
-        loss = self.loss_fn(y_pred, y)
-        self.validation_step_losses.append(loss)
         self.acc.update(torch.argmax(y_pred, -1), y)
         self.f1.update(torch.argmax(y_pred, -1), y)
-        self.log('val_loss', loss, on_epoch=True)
-
-    def on_validation_epoch_start(self) -> None:
-        self.validation_step_losses = []
+        self.log('val_loss', self.loss_fn(y_pred, y), on_epoch=True)
 
     def on_validation_epoch_end(self) -> None:
-        loss = torch.stack(self.validation_step_losses).mean(dim=0)
-        self.scheduler.step(loss)
         metrics = {
             'val_acc': self.acc.compute(),
             'val_f1': self.f1.compute().mean()
@@ -280,8 +270,15 @@ class MyClassifier(pl.LightningModule):
 
     def configure_optimizers(self):
         optimizer = torch.optim.Adam(self.parameters(), lr=self.lr, weight_decay=self.weight_decay)
-        self.scheduler = ReduceLROnPlateau(optimizer, 'min')
-        return optimizer
+        return {
+            'optimizer': optimizer,
+            'lr_scheduler': {
+                'scheduler': ReduceLROnPlateau(optimizer, 'min', .5, 10),
+                'monitor': 'val_loss',
+                'interval': 'epoch',
+                'frequency': 1
+            }
+        }
 
 class MyLSTM(MyClassifier):
     def __init__(
@@ -582,13 +579,13 @@ def main():
     # df = df[['name', 'Data wydania', 'label_true', 'label_predict']].rename(columns={'Data wydania': 'date'})
     # df.to_csv('saved_objects/prediction_results.csv')
 
-    train_ds, test_ds, val_ds = split_dataset(ds, groups)
-    model = MyTransformer(print_test_samples=True)
-    trainer = train_model(model, train_ds, val_ds, precision='bf16-mixed', deterministic=deterministic)
-    test_dl = DataLoader(test_ds, batch_sampler=TopicSampler(test_ds), num_workers=10, pin_memory=True)
-    trainer.test(dataloaders=test_dl, ckpt_path='best', verbose=True)
+    # train_ds, test_ds, val_ds = split_dataset(ds, groups)
+    # model = MyTransformer(print_test_samples=True)
+    # trainer = train_model(model, train_ds, val_ds, precision='bf16-mixed', deterministic=deterministic)
+    # test_dl = DataLoader(test_ds, batch_sampler=TopicSampler(test_ds), num_workers=10, pin_memory=True)
+    # trainer.test(dataloaders=test_dl, ckpt_path='best', verbose=True)
 
-    # cross_validate(MyTransformer, {}, ds, groups, n_splits=5, precision='bf16-mixed', deterministic=deterministic)
+    cross_validate(MyTransformer, {}, ds, groups, n_splits=5, precision='bf16-mixed', deterministic=deterministic)
 
 if __name__ == '__main__':
     main()
