@@ -1,4 +1,4 @@
-from typing import Iterable, Tuple, List
+from typing import Any, Iterable, Tuple, List
 from warnings import warn
 import numpy as np
 import pandas as pd
@@ -10,11 +10,12 @@ from torch.utils.data import Dataset
 
 DATA_DIR = 'dane'
 VERIFIED_DIR = 'dane/Etap I - zweryfikowane szeregi'
-DATES_FILE = 'dane/Daty_kryzysów.xlsx'
+DATES_FILE = 'dane/Crisis Detector.xlsx'
 
 FILE_BLACKLIST = [
     'Daty_kryzysów.xlsx',
     'Crisis Detector - lista wątków_.docx',
+    'Legenda _ opisy kolumn.docx',
     'Fake news_baza publikacji.xlsx'
 ]
 
@@ -29,21 +30,26 @@ def get_all_data() -> List[str]:
     filenames = [fname for fname in filenames if os.path.basename(fname).replace("'","_") not in FILE_BLACKLIST]
     return filenames
 
-def get_crisis_dates() -> pd.DataFrame:
-    return pd.read_excel(DATES_FILE)
+def get_crisis_metadata(drop_nan_dates: bool = False) -> pd.DataFrame:
+    df = pd.read_excel(DATES_FILE).drop(columns=['Unnamed: 0'])
+    df = df[df['Baza']].drop(columns=['Baza'])
+    if drop_nan_dates:
+        df = df[df['Data wybuchu kryzysu'].notna()].reset_index(drop=True)
+    return df
 
-def get_data_with_dates(files: List[str]) -> pd.DataFrame:
+def get_data_with_dates(files: List[str], drop_nan_dates: bool = True) -> pd.DataFrame:
     fnames = list(map(os.path.basename, files))
-    dates = get_crisis_dates()
-    dates1 = dates[dates['Plik'].isin(fnames)]
-    dates2 = dates[dates['Plik2'].isin(fnames)]
-    if len(dates1) > len(dates2):
-        dates1['path'] = dates1['Plik'].apply(lambda x: files[fnames.index(x)])
-        dates = dates1
+    metadata = get_crisis_metadata(drop_nan_dates)
+    data1 = metadata[metadata['Nazwa pliku'].isin(fnames)]
+    data2 = metadata[metadata['Nazwa pliku 2'].isin(fnames)]
+    if len(data1) > len(data2):
+        data1['path'] = data1['Nazwa pliku'].apply(lambda x: files[fnames.index(x)])
+        data = data1
     else:
-        dates2['path'] = dates2['Plik2'].apply(lambda x: files[fnames.index(x)])
-        dates = dates2
-    return dates[['path', 'Data']]
+        data2['path'] = data2['Nazwa pliku 2'].apply(lambda x: files[fnames.index(x)])
+        data = data2
+    data = data.rename(columns={'Opis': 'name', 'Data wybuchu kryzysu': 'crisis_start'})
+    return data[['name', 'path', 'crisis_start']]
 
 def clip_date_range(index: pd.DatetimeIndex, crisis_start: pd.Timestamp | None = None, window_size: int | Tuple[int, int] | None = None) -> pd.DatetimeIndex:
     if type(window_size) == int and crisis_start is not None:
@@ -218,4 +224,14 @@ class SeriesDataset(Dataset):
     
     def __len__(self) -> int:
         return self.series.shape[0]
+
+class SimpleDataset(Dataset):
+    def __init__(self, *data) -> None:
+        super().__init__()
+        self.data = list(zip(*data))
     
+    def __getitem__(self, index) -> Any:
+        return self.data[index]
+    
+    def __len__(self) -> int:
+        return len(self.data)

@@ -11,6 +11,7 @@ import torch
 from torch import nn
 from torch.utils.data import Dataset, DataLoader, TensorDataset, Sampler
 from torch.optim.lr_scheduler import ReduceLROnPlateau
+from torch.nn.utils.rnn import pad_sequence
 import torchmetrics
 import lightning as pl
 from lightning.pytorch import seed_everything
@@ -20,15 +21,21 @@ from sklearn.preprocessing import StandardScaler
 from embedder import TextEmbedder
 from data_tools import load_data, SeriesDataset, get_all_data, get_data_with_dates
 from training_tools import split_dataset, train_model, test_model, fold_dataset
+from aggregator import EmbeddingAggregator, MeanBackbone
 
 torch.set_float32_matmul_precision('high')
 
-def add_embeddings(days_df: pd.DataFrame, text_df: pd.DataFrame, embeddings: List[torch.Tensor] | torch.Tensor) -> pd.DataFrame:
+def add_embeddings(days_df: pd.DataFrame, text_df: pd.DataFrame, embeddings: List[torch.Tensor] | torch.Tensor, aggregator: EmbeddingAggregator) -> pd.DataFrame:
     if type(embeddings) == list:
         embeddings = torch.cat(embeddings, dim=0)
-    embeddings = embeddings.numpy()
+    # embeddings = embeddings.numpy()
     sections = np.cumsum(text_df.groupby(['group', 'Data wydania']).count()['text']).tolist()[:-1]
-    day_embeddings = np.stack([np.mean(t, axis=0) for t in np.vsplit(embeddings, sections)], axis=0)
+    embeddings = torch.vsplit(embeddings, sections)
+    if aggregator.model.sample_size:
+        day_embeddings = aggregator(pad_sequence(embeddings, batch_first=True)).numpy()
+    else:
+        day_embeddings = np.concatenate([aggregator(t.unsqueeze(0)).numpy() for t in embeddings], axis=0)
+    # day_embeddings = np.stack([np.mean(t, axis=0) for t in np.vsplit(embeddings, sections)], axis=0)
     embedding_df = text_df[['group', 'Data wydania']].drop_duplicates().reset_index(drop=True)
     embedding_df['embedding'] = day_embeddings.tolist()
     days_df = days_df.join(embedding_df.set_index(['group', 'Data wydania']), ['group', 'Data wydania'], how='left')
@@ -366,7 +373,10 @@ class MyTransformer(MyClassifier):
             nn.Tanh(),
         )
         self.positional_encoding = PositionalEncoding(self.hidden_dim)
-        self.transformer = nn.TransformerEncoder(nn.TransformerEncoderLayer(self.hidden_dim, self.n_heads, activation=nn.functional.leaky_relu, batch_first=True), self.transformer_layers)
+        self.transformer = nn.TransformerEncoder(
+            nn.TransformerEncoderLayer(self.hidden_dim, self.n_heads, activation=nn.functional.leaky_relu, batch_first=True),
+            self.transformer_layers
+        )
         self.output_net = nn.Sequential(
             nn.Dropout(.1),
             nn.Linear(self.hidden_dim, 2),
@@ -406,13 +416,9 @@ def cross_validate(
         model = model_class(**model_params)
 
         trainer = train_model(model, train_ds, val_ds, precision, batch_size, max_epochs, max_time, num_workers, False, deterministic)
-        # test_results = test_model(test_ds, None, trainer, precision, batch_size, num_workers, False, deterministic)
 
         test_dl = DataLoader(test_ds, batch_sampler=TopicSampler(test_ds), num_workers=num_workers, pin_memory=True)
         test_results = trainer.test(dataloaders=test_dl, ckpt_path='best', verbose=False)[0]
-        # test_shift_mean, test_shift_std = test_shift(model, test_ds)
-        # test_results['test_shift_mean'] = test_shift_mean
-        # test_results['test_shift_std'] = test_shift_std
         stats.append(test_results)
     stats = pd.DataFrame(stats)
     print(stats)
@@ -421,56 +427,6 @@ def cross_validate(
     print('Standard deviation:')
     print(stats.std(axis=0))
     return stats
-
-def cross_validate2(
-        model_class: type,
-        model_params: Tuple,
-        ds: Dataset,
-        groups: torch.Tensor,
-        df: pd.DataFrame,
-        use_weights: bool = False,
-        n_splits: int = 10,
-        precision: str = 'bf16-mixed',
-        batch_size: int = 512,
-        max_epochs: int = -1,
-        max_time = None,
-        num_workers: int = 10,
-        deterministic: bool = False
-) -> pd.DataFrame:
-    folds = fold_dataset(ds, groups, n_splits)
-    # stats = []
-    print(len(ds), len(df))
-    df['true_label'] = -1
-    df['predict_label'] = -1
-    for train_ds, test_ds, val_ds in tqdm(folds):
-        if use_weights:
-            class_ratio = train_ds[:][1].unique(return_counts=True)[1] / len(train_ds)
-            weight = torch.pow(class_ratio * class_ratio.shape[0], -1)
-            model_params += (weight,)
-        model = model_class(*model_params)
-
-        trainer = train_model(model, train_ds, val_ds, precision, batch_size, max_epochs, max_time, num_workers, False, deterministic)
-        test_results = test_model(test_ds, None, trainer, precision, batch_size, num_workers, False, deterministic)
-        # test_shift_mean, test_shift_std = test_shift(model, test_ds)
-        # test_results['test_shift_mean'] = test_shift_mean
-        # test_results['test_shift_std'] = test_shift_std
-        # stats.append(test_results)
-
-        X, y = test_ds[:]
-        y_pred = torch.argmax(model(X), dim=-1)
-        df.loc[:, 'true_label'].iloc[test_ds.indices] = y.numpy()
-        df.loc[:, 'predict_label'].iloc[test_ds.indices] = y_pred.numpy()
-    # stats = pd.DataFrame(stats)
-    # print(stats)
-    # print('Means:')
-    # print(stats.mean(axis=0))
-    # print('Standard deviation:')
-    # print(stats.std(axis=0))
-    if (df['true_label'].astype(bool) != df['label']).any():
-        raise RuntimeError('Label mismatch.')
-    if (df['true_label'] == -1).any():
-        raise RuntimeError('Indices are fucked.')
-    return df
 
 def get_shifts(y_true: torch.Tensor, y_pred: torch.Tensor) -> torch.Tensor:
     sequence_idx = (torch.diff(y_true, prepend=torch.tensor([1], device=y_true.device), append=torch.tensor([0], device=y_true.device)) == -1).nonzero().squeeze()
@@ -538,7 +494,7 @@ def main():
 
         data = get_data_with_dates(get_all_data())
 
-        days_df, text_df = load_data(data['path'].to_list(), data['Data'].to_list(), text_samples, True)
+        days_df, text_df = load_data(data['path'].to_list(), data['crisis_start'].to_list(), text_samples, True)
         days_df.to_feather(DAYS_DF_PATH)
         text_df.to_feather(POSTS_DF_PATH)
 
@@ -568,16 +524,9 @@ def main():
         with open(EMBEDDINGS_PATH, 'rb') as f:
             embeddings = torch.load(f)
 
-    days_df = add_embeddings(days_df, text_df, embeddings)
+    aggregator = EmbeddingAggregator(MeanBackbone())
+    days_df = add_embeddings(days_df, text_df, embeddings, aggregator)
     ds, groups = create_dataset(days_df)
-
-    # data = get_data_with_dates(get_all_data())
-    # names = list(map(lambda x: os.path.basename(x)[:-5], data['path'].to_list()))
-    # days_df['name'] = days_df['group'].apply(lambda x: names[x])
-    # df = pd.concat([pd.concat((days_df.loc[(days_df['group'] == g) & ~days_df['label']].iloc[-30:], days_df.loc[(days_df['group'] == g) & days_df['label']].iloc[:30])) for g in days_df['group'].unique()], ignore_index=True)
-    # df = cross_validate2(MyModel, (782, 128, 2), ds, groups, df, n_splits=5, precision='32', deterministic=deterministic)
-    # df = df[['name', 'Data wydania', 'label_true', 'label_predict']].rename(columns={'Data wydania': 'date'})
-    # df.to_csv('saved_objects/prediction_results.csv')
 
     # train_ds, test_ds, val_ds = split_dataset(ds, groups)
     # model = MyTransformer(print_test_samples=True)

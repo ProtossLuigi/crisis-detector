@@ -8,6 +8,9 @@ transformers
 datasets
 scikit-learn
 pandas
+openpyxl
 numpy
 tqdm
 ipykernel
+ipywidgets
+seaborn

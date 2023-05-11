@@ -121,7 +121,7 @@ def main():
 
     if end_to_end or not os.path.isfile(TEXTS_PATH):
         dates = get_data_with_dates(get_verified_data())
-        posts_df = load_text_data(dates['path'], dates['Data'], drop_invalid=True)
+        posts_df = load_text_data(dates['path'], dates['crisis_start'], drop_invalid=True)
         posts_df.to_feather(TEXTS_PATH)
 
         if deterministic:
