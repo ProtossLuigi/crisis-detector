@@ -1,3 +1,4 @@
+import math
 from typing import Any, Optional, Tuple, Iterable
 import os
 import numpy as np
@@ -48,9 +49,6 @@ class EmbeddingAggregator(pl.LightningModule):
         self.classifier = nn.Sequential(
             nn.Dropout(.1),
             nn.Linear(self.embedding_dim, 384),
-            # nn.Dropout(.1),
-            # nn.Tanh(),
-            # nn.Linear(512, 256),
             nn.Dropout(.1),
             nn.Tanh(),
             nn.Linear(384, 2),
@@ -64,7 +62,7 @@ class EmbeddingAggregator(pl.LightningModule):
         X, y = batch
         y_pred = self.classifier(self(X))
         loss = self.loss_fn(y_pred, y)
-        self.log('train_loss', loss.detach(), on_epoch=True)
+        self.log('train_loss', loss.item(), on_epoch=True)
         return loss
     
     @torch.no_grad()
@@ -73,13 +71,13 @@ class EmbeddingAggregator(pl.LightningModule):
         y_pred = self.classifier(self(X))
         self.acc.update(torch.argmax(y_pred, -1), y)
         self.f1.update(torch.argmax(y_pred, -1), y)
-        self.log('val_loss', self.loss_fn(y_pred, y).detach(), on_epoch=True)
+        self.log('val_loss', self.loss_fn(y_pred, y).item(), on_epoch=True)
     
     @torch.no_grad()
     def on_validation_epoch_end(self) -> None:
         metrics = {
-            'val_acc': self.acc.compute().detach(),
-            'val_f1': self.f1.compute().mean().detach()
+            'val_acc': self.acc.compute().item(),
+            'val_f1': self.f1.compute().mean().item()
         }
         self.log_dict(metrics)
         self.acc.reset()
@@ -93,16 +91,19 @@ class EmbeddingAggregator(pl.LightningModule):
         self.f1.update(torch.argmax(y_pred, -1), y)
         self.prec.update(torch.argmax(y_pred, -1), y)
         self.rec.update(torch.argmax(y_pred, -1), y)
-        self.log('test_loss', self.loss_fn(y_pred, y).detach(), on_epoch=True)
+        self.log('test_loss', self.loss_fn(y_pred, y).item(), on_epoch=True)
     
     @torch.no_grad()
     def on_test_epoch_end(self) -> None:
         metrics = {
-            'test_acc': self.acc.compute().detach()
+            'test_acc': self.acc.compute().item()
         }
-        metrics['test_f1_neg'], metrics['test_f1_pos'] = self.f1.compute().detach()
-        metrics['test_precision_neg'], metrics['test_precision_pos'] = self.prec.compute().detach()
-        metrics['test_recall_neg'], metrics['test_recall_pos'] = self.rec.compute().detach()
+        f1 = self.f1.compute()
+        metrics['test_f1_neg'], metrics['test_f1_pos'] = f1[0].item(), f1[1].item()
+        prec = self.prec.compute()
+        metrics['test_precision_neg'], metrics['test_precision_pos'] = prec[0].item(), prec[1].item()
+        rec = self.rec.compute()
+        metrics['test_recall_neg'], metrics['test_recall_pos'] = rec[0].item(), rec[1].item()
         self.log_dict(metrics)
         self.acc.reset()
         self.f1.reset()
@@ -126,6 +127,7 @@ class MeanAggregator(EmbeddingAggregator):
         super().__init__(*args, **kwargs)
     
     def forward(self, x):
+        print(x.numel())
         return torch.mean(x, dim=1)
 
 class ConvAggregator(EmbeddingAggregator):
@@ -145,16 +147,59 @@ class ConvAggregator(EmbeddingAggregator):
     
     def forward(self, x: torch.Tensor):
         return self.net(x.view(-1, self.embedding_dim, self.sample_size)).squeeze()
-    
-class LSTMAggregator(EmbeddingAggregator):
+   
+class RecurrentAggregator(EmbeddingAggregator):
     def __init__(self, *args, **kwargs) -> None:
         super().__init__(*args, **kwargs)
 
-        self.net = nn.LSTM(self.embedding_dim, self.embedding_dim, num_layers=2, batch_first=True, dropout=.1)
+        self.net = nn.GRU(self.embedding_dim, self.embedding_dim, num_layers=2, batch_first=True, dropout=.1)
     
     def forward(self, x: torch.Tensor):
         x, _ = self.net(x)
         return x[:, -1, :]
+
+class PositionalEncoding(nn.Module):
+    def __init__(self, d_model, max_len=30):
+        """
+        Args
+            d_model: Hidden dimensionality of the input.
+            max_len: Maximum length of a sequence to expect.
+        """
+        super().__init__()
+
+        # Create matrix of [SeqLen, HiddenDim] representing the positional encoding for max_len inputs
+        pe = torch.zeros(max_len, d_model)
+        position = torch.arange(0, max_len, dtype=torch.float).unsqueeze(1)
+        div_term = torch.exp(torch.arange(0, d_model, 2).float() * (-math.log(10000.0) / d_model))
+        pe[:, 0::2] = torch.sin(position * div_term)
+        pe[:, 1::2] = torch.cos(position * div_term)
+        pe = pe.unsqueeze(0)
+
+        # register_buffer => Tensor which is not a parameter, but should be part of the modules state.
+        # Used for tensors that need to be on the same device as the module.
+        # persistent=False tells PyTorch to not add the buffer to the state dict (e.g. when we save the model)
+        self.register_buffer("pe", pe, persistent=False)
+
+    def forward(self, x):
+        x = x + self.pe[:, : x.size(1)]
+        return x
+
+class TransformerAggregator(EmbeddingAggregator):
+    def __init__(self, n_heads: int = 8, transformer_layers: int = 6, *args, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        self.n_heads = n_heads
+        self.transformer_layers = transformer_layers
+
+        self.positional_encoding = PositionalEncoding(self.embedding_dim, max_len=self.sample_size)
+        self.transformer = nn.TransformerEncoder(
+            nn.TransformerEncoderLayer(self.embedding_dim, self.n_heads, activation=nn.functional.leaky_relu, batch_first=True),
+            self.transformer_layers
+        )
+    
+    def forward(self, x: torch.Tensor):
+        x = self.positional_encoding(x)
+        x = self.transformer(x)[:, -1]
+        return x
 
 def extract_data(
         filename: str,
@@ -261,7 +306,7 @@ def main():
     deterministic = True
     end_to_end = False
     sample_size = 50
-    batch_size = 64
+    batch_size = 512
     padding = False
     
     TEXTS_PATH = 'saved_objects/texts_no_sample_df.feather'
@@ -303,7 +348,7 @@ def main():
     ds, groups = create_dataset(posts_df, embeddings, 0., sample_size, batch_size > 0, padding)
     # print(sum(ds[:][1]) / len(ds))
     
-    cross_validate(LSTMAggregator, {'sample_size': sample_size}, ds, groups, True, 5, batch_size=batch_size, deterministic=deterministic)
+    cross_validate(TransformerAggregator, {'sample_size': sample_size}, ds, groups, True, 5, batch_size=batch_size, num_workers=10, deterministic=deterministic)
 
 if __name__ == '__main__':
     main()
