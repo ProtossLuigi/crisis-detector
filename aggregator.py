@@ -190,16 +190,15 @@ class TransformerAggregator(EmbeddingAggregator):
         self.n_heads = n_heads
         self.transformer_layers = transformer_layers
 
-        self.positional_encoding = PositionalEncoding(self.embedding_dim, max_len=self.sample_size)
+        # self.positional_encoding = PositionalEncoding(self.embedding_dim, max_len=self.sample_size)
         self.transformer = nn.TransformerEncoder(
             nn.TransformerEncoderLayer(self.embedding_dim, self.n_heads, activation=nn.functional.leaky_relu, batch_first=True),
             self.transformer_layers
         )
     
     def forward(self, x: torch.Tensor):
-        x = self.positional_encoding(x)
-        x = self.transformer(x)[:, -1]
-        return x
+        # x = self.positional_encoding(x)
+        return self.transformer(x).mean(dim=1)
 
 def extract_data(
         filename: str,
