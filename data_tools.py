@@ -10,6 +10,7 @@ from torch.utils.data import Dataset
 
 DATA_DIR = 'dane'
 VERIFIED_DIR = 'dane/Etap I - zweryfikowane szeregi'
+FULL_TEXT_DIR = 'dane/Bazy - pełne treści publikacji'
 DATES_FILE = 'dane/Crisis Detector.xlsx'
 
 FILE_BLACKLIST = [
@@ -27,6 +28,11 @@ def get_verified_data() -> List[str]:
 def get_all_data() -> List[str]:
     filenames = [os.path.join(DATA_DIR, file) for file in os.listdir(DATA_DIR) if os.path.isfile(os.path.join(DATA_DIR, file))]
     filenames += [os.path.join(VERIFIED_DIR, file) for file in os.listdir(VERIFIED_DIR) if os.path.isfile(os.path.join(VERIFIED_DIR, file))]
+    filenames = [fname for fname in filenames if os.path.basename(fname).replace("'","_") not in FILE_BLACKLIST]
+    return filenames
+
+def get_full_text_data() -> List[str]:
+    filenames = [os.path.join(FULL_TEXT_DIR, file) for file in os.listdir(FULL_TEXT_DIR) if os.path.isfile(os.path.join(FULL_TEXT_DIR, file))]
     filenames = [fname for fname in filenames if os.path.basename(fname).replace("'","_") not in FILE_BLACKLIST]
     return filenames
 
