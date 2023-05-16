@@ -20,8 +20,8 @@ from sklearn.preprocessing import StandardScaler
 
 from embedder import TextEmbedder
 from data_tools import load_data, SeriesDataset, get_all_data, get_data_with_dates
-from training_tools import split_dataset, train_model, test_model, fold_dataset
-from aggregator import EmbeddingAggregator, MeanBackbone
+from training_tools import split_dataset, train_model, test_model, fold_dataset, init_trainer
+from aggregator import EmbeddingAggregator, MeanAggregator
 
 torch.set_float32_matmul_precision('high')
 
@@ -31,7 +31,7 @@ def add_embeddings(days_df: pd.DataFrame, text_df: pd.DataFrame, embeddings: Lis
     # embeddings = embeddings.numpy()
     sections = np.cumsum(text_df.groupby(['group', 'Data wydania']).count()['text']).tolist()[:-1]
     embeddings = torch.vsplit(embeddings, sections)
-    if aggregator.model.sample_size:
+    if aggregator.sample_size:
         day_embeddings = aggregator(pad_sequence(embeddings, batch_first=True)).numpy()
     else:
         day_embeddings = np.concatenate([aggregator(t.unsqueeze(0)).numpy() for t in embeddings], axis=0)
@@ -190,15 +190,19 @@ class MyClassifier(pl.LightningModule):
         self.lr = lr
         self.weight_decay = weight_decay
         self.print_test_samples = print_test_samples
-        self.class_weights = .5 / class_ratios if class_ratios else None
+        
+        self.init_loss_fn(class_ratios)
 
-        self.loss_fn = nn.CrossEntropyLoss(self.class_weights)
         self.f1 = torchmetrics.F1Score('multiclass', num_classes=2, average=None)
         self.acc = torchmetrics.Accuracy('multiclass', num_classes=2, average='micro')
         self.prec = torchmetrics.Precision('multiclass', num_classes=2, average=None)
         self.rec = torchmetrics.Recall('multiclass', num_classes=2, average=None)
         self.shift = ShiftMetric()
         self.shift2 = Shift2Metric()
+    
+    def init_loss_fn(self, class_ratios: torch.Tensor | None = None) -> None:
+        self.class_weights = .5 / class_ratios if class_ratios else None
+        self.loss_fn = nn.CrossEntropyLoss(self.class_weights)
     
     def forward(self, x):
         raise NotImplementedError()
@@ -393,8 +397,7 @@ class MyTransformer(MyClassifier):
         return x
 
 def cross_validate(
-        model_class: type,
-        model_params: dict,
+        model: MyClassifier,
         ds: Dataset,
         groups: torch.Tensor,
         use_weights: bool = False,
@@ -404,16 +407,17 @@ def cross_validate(
         max_epochs: int = -1,
         max_time = None,
         num_workers: int = 10,
-        deterministic: bool = False
+        deterministic: bool = False,
+        temp_model_savepath: str = 'temp_model.pt'
 ) -> pd.DataFrame:
     folds = fold_dataset(ds, groups, n_splits)
     stats = []
+    init_state_dict = model.state_dict()
     for train_ds, test_ds, val_ds in tqdm(folds):
+        model.load_state_dict(init_state_dict)
         if use_weights:
             class_ratio = train_ds[:][1].unique(return_counts=True)[1] / len(train_ds)
-            weight = torch.pow(class_ratio * class_ratio.shape[0], -1)
-            model_params += (weight,)
-        model = model_class(**model_params)
+            model.init_loss_fn(class_ratio)
 
         trainer = train_model(model, train_ds, val_ds, precision, batch_size, max_epochs, max_time, num_workers, False, deterministic)
 
@@ -524,9 +528,12 @@ def main():
         with open(EMBEDDINGS_PATH, 'rb') as f:
             embeddings = torch.load(f)
 
-    aggregator = EmbeddingAggregator(MeanBackbone())
+    aggregator = MeanAggregator()
     days_df = add_embeddings(days_df, text_df, embeddings, aggregator)
     ds, groups = create_dataset(days_df)
+
+    if deterministic:
+        seed_everything(42, workers=True)
 
     # train_ds, test_ds, val_ds = split_dataset(ds, groups)
     # model = MyTransformer(print_test_samples=True)
@@ -534,7 +541,7 @@ def main():
     # test_dl = DataLoader(test_ds, batch_sampler=TopicSampler(test_ds), num_workers=10, pin_memory=True)
     # trainer.test(dataloaders=test_dl, ckpt_path='best', verbose=True)
 
-    cross_validate(MyTransformer, {}, ds, groups, n_splits=5, precision='bf16-mixed', deterministic=deterministic)
+    cross_validate(MyTransformer(), ds, groups, n_splits=5, precision='bf16-mixed', deterministic=deterministic)
 
 if __name__ == '__main__':
     main()

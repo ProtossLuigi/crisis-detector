@@ -127,7 +127,6 @@ class MeanAggregator(EmbeddingAggregator):
         super().__init__(*args, **kwargs)
     
     def forward(self, x):
-        print(x.numel())
         return torch.mean(x, dim=1)
 
 class ConvAggregator(EmbeddingAggregator):
