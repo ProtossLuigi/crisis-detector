@@ -1,7 +1,10 @@
-from typing import Any, List
+from typing import Any, List, Tuple
 import os
+import numpy as np
 import pandas as pd
+from sklearn.preprocessing import StandardScaler
 from tqdm import tqdm
+from itertools import compress
 import json
 
 import torch
@@ -21,18 +24,16 @@ from crisis_detector import MyClassifier, ShiftMetric, Shift2Metric
 torch.set_float32_matmul_precision('high')
 
 class CombinedDataset(Dataset):
-    def __init__(self, day_features: torch.Tensor, tokens: dict, indices: torch.Tensor, labels: torch.Tensor) -> None:
+    def __init__(self, day_features: torch.Tensor, tokens: List[dict], sections: List[List[int]], labels: torch.Tensor) -> None:
         super().__init__()
 
         self.day_features = day_features
         self.tokens = tokens
-        self.indices = indices
+        self.sections = sections
         self.labels = labels
-        
-        assert len(self.indices) == len(self.day_features) + 1
     
     def __getitem__(self, index) -> Any:
-        return (self.day_features[index], {key: val[self.indices[index]:self.indices[index+1]] for key, val in self.tokens.items()}), self.labels[index]
+        return self.day_features[index], self.tokens[index], self.sections[index], self.labels[index]
 
     def __len__(self) -> int:
         return len(self.labels)
@@ -142,22 +143,75 @@ class CrisisDetector(pl.LightningModule):
             }
         }
 
-def tokenize_dataset(text: List[str], tokenizer_name: str = 'xlm-roberta-base', batch_size: int | None = None, max_length: int = 256) -> dict:
-    tokenizer = AutoTokenizer.from_pretrained('xlm-roberta-base')
+def tokenize_dataset(text: List[str], tokenizer_name: str = 'xlm-roberta-base', batch_size: int | None = None, max_length: int = 256) -> Tuple[torch.Tensor, torch.Tensor]:
+    tokenizer = AutoTokenizer.from_pretrained(tokenizer_name)
     tokenize_fn = lambda x: tokenizer(x, truncation=True, padding='max_length', max_length=max_length, return_tensors='pt')
     if batch_size:
-        tokens = {'input_ids': [], 'attention_mask': []}
+        input_ids, attention_mask = [], []
         for i in tqdm(range(0, len(text), batch_size)):
             for key, val in tokenize_fn(text[i:i+batch_size]).items():
-                tokens[key].append(val)
-        for key, val in tokens.items():
-            tokens[key] = torch.cat(val, dim=0)
+                if key == 'input_ids':
+                    input_ids.append(val)
+                elif key == 'attention_mask':
+                    attention_mask.append(val)
+        input_ids = torch.cat(input_ids, dim=0)
+        attention_mask = torch.cat(attention_mask, dim=0)
     else:
         tokens = tokenize_fn(text)
-    return tokens
+        input_ids = tokens['input_ids']
+        attention_mask = tokens['attention_mask']
+    return input_ids, attention_mask
 
-def create_dataset(days_df: pd.DataFrame, text_df: pd.DataFrame, tokens: dict):
-    ... #TODO
+def get_day_splits(text_df: pd.DataFrame) -> List[int]:
+    sections = np.cumsum(text_df.groupby(['group', 'Data wydania']).count()['text']).tolist()[:-1]
+    return sections
+
+def get_day_features(df: pd.DataFrame) -> Tuple[torch.Tensor, torch.Tensor, pd.Series]:
+    numeric_cols = ['brak', 'pozytywny', 'neutralny', 'negatywny', 'suma']
+    X = torch.tensor(df[numeric_cols].values, dtype=torch.long)
+    y = torch.tensor(df['label'], dtype=torch.long)
+    embeddings = torch.tensor(df['embedding'], dtype=torch.float32)
+    groups = df['group']
+
+    new_features = []
+    for i in groups.unique():
+        X_i = X[groups == i]
+        X_diff = torch.ones_like(X_i)
+        X_diff[1:] = X_i[1:] / X_i[:-1]
+        X_diff = torch.pow(X_diff, 2)
+        X_diff = (X_diff - 1.) / (X_diff + 1.)
+        zeros = X_i == 0
+        X_diff[zeros & X_diff.isnan()] = 0.
+        X_diff.nan_to_num_(1.)
+        X_ratio = X_i[:, :-1] / X_i[:, -1:]
+        X_ratio.nan_to_num_(0.)
+        X_scaled = torch.tensor(StandardScaler().fit_transform(X_i))
+        new_features.append(torch.cat((X_scaled, X_diff, X_ratio), dim=1))
+    
+    X = torch.cat((torch.cat(new_features, dim=0), embeddings), dim=1).to(torch.float32)
+    return X, y, groups
+
+def create_dataset(
+        X_features: torch.Tensor,
+        input_ids: torch.Tensor,
+        attention_mask: torch.Tensor,
+        section: List[int],
+        y: torch.Tensor,
+        groups: pd.Series,
+        sequence_len: int = 30
+    ) -> Dataset:
+    seq_features = []
+    seq_tokens = []
+    seq_sections = []
+    seq_labels = []
+    seq_groups = []
+    for g in groups.unique():
+        selector = groups == g
+        features_g = X_features[selector]
+        tokens_g = list(compress(X_tokens, selector))
+        labels_g = y[selector]
+
+        # TODO
 
 def main():
     deterministic = True
