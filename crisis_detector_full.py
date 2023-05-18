@@ -162,8 +162,11 @@ def tokenize_dataset(text: List[str], tokenizer_name: str = 'xlm-roberta-base', 
         attention_mask = tokens['attention_mask']
     return input_ids, attention_mask
 
-def get_day_splits(text_df: pd.DataFrame) -> List[int]:
-    sections = np.cumsum(text_df.groupby(['group', 'Data wydania']).count()['text']).tolist()[:-1]
+def get_day_splits(days_df: pd.DataFrame, text_df: pd.DataFrame) -> List[int]:
+    combined_df = pd.merge(days_df[['group', 'Data wydania']], text_df, how='left', on=['group', 'Data wydania'])
+    empty_days = combined_df[combined_df['text'].isna()].index
+    sections = [0] + np.cumsum(text_df.groupby(['group', 'Data wydania']).count()['text']).tolist()
+    #TODO
     return sections
 
 def get_day_features(df: pd.DataFrame) -> Tuple[torch.Tensor, torch.Tensor, pd.Series]:
@@ -192,24 +195,28 @@ def get_day_features(df: pd.DataFrame) -> Tuple[torch.Tensor, torch.Tensor, pd.S
     return X, y, groups
 
 def create_dataset(
-        X_features: torch.Tensor,
+        features: torch.Tensor,
         input_ids: torch.Tensor,
         attention_mask: torch.Tensor,
-        section: List[int],
-        y: torch.Tensor,
+        sections: List[int],
+        labels: torch.Tensor,
         groups: pd.Series,
         sequence_len: int = 30
-    ) -> Dataset:
+) -> Dataset:
     seq_features = []
-    seq_tokens = []
+    seq_input_ids = []
+    seq_attention_mask = []
     seq_sections = []
     seq_labels = []
     seq_groups = []
     for g in groups.unique():
         selector = groups == g
-        features_g = X_features[selector]
-        tokens_g = list(compress(X_tokens, selector))
-        labels_g = y[selector]
+        features_g = features[selector]
+        input_ids_g = input_ids[selector]
+        attention_mask_g = attention_mask[selector]
+        labels_g = labels[selector]
+
+
 
         # TODO
 

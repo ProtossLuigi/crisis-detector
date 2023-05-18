@@ -482,6 +482,16 @@ def save_shift(model: pl.LightningModule, test_ds: Dataset, crisis_names: Iterab
     with open(filename, 'w') as f:
         json.dump(d, f)
 
+def get_predictions(model: pl.LightningModule, ds: Dataset, batch_size: int = 256, num_workers: int = 10, precision: str = 'bf16-mixed', deterministic: bool = False):
+    X, y_true = ds[:]
+    dl = DataLoader(TensorDataset(X), batch_size, num_workers=num_workers, pin_memory=True)
+    trainer = pl.Trainer(precision=precision, logger=False, deterministic=deterministic)
+    y_pred = torch.argmax(torch.cat(trainer.predict(model, dl, ckpt_path='best'), dim=0), dim=-1)
+    metric = ShiftMetric(absolute=False)
+    shifts = metric(y_pred, y_true)
+    topics = (torch.diff(y_true) == -1).nonzero().squeeze(1)
+    return shifts, torch.split(y_pred, topics.tolist())
+
 def main():
     deterministic = True
     end_to_end = False
