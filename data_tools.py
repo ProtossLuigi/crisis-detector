@@ -17,7 +17,8 @@ FILE_BLACKLIST = [
     'Daty_kryzysów.xlsx',
     'Crisis Detector - lista wątków_.docx',
     'Legenda _ opisy kolumn.docx',
-    'Fake news_baza publikacji.xlsx'
+    'Fake news_baza publikacji.xlsx',
+    'Crisis Detector.xlsx'
 ]
 
 def get_verified_data() -> List[str]:
@@ -141,8 +142,12 @@ def load_data(
     assert len(filenames) == len(crisis_dates)
     dfs, text_dfs = [], []
     for i, (fname, date) in enumerate(tqdm(zip(filenames, crisis_dates), total=len(filenames))):
-        dfp = extract_data(fname, date, num_samples, drop_invalid=drop_invalid)
-        if dfp is None:
+        try:
+            dfp = extract_data(fname, date, num_samples, drop_invalid=drop_invalid)
+            if dfp is None:
+                continue
+        except KeyError:
+            warn(f'Missing column in {fname}. Skipping...')
             continue
         df, text_df = dfp
         df = df.reset_index(names='Data wydania')

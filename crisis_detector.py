@@ -9,7 +9,7 @@ from tqdm import tqdm
 
 import torch
 from torch import nn
-from torch.utils.data import Dataset, DataLoader, TensorDataset, Sampler
+from torch.utils.data import Dataset, DataLoader, TensorDataset, SequentialSampler, BatchSampler
 from torch.optim.lr_scheduler import ReduceLROnPlateau
 from torch.nn.utils.rnn import pad_sequence
 import torchmetrics
@@ -153,10 +153,12 @@ class Shift2Metric(torchmetrics.Metric):
         else:
             return shifts
 
-class TopicSampler(Sampler[List[int]]):
-    def __init__(self, data_source: Dataset) -> None:
-        super().__init__(data_source)
-        self.data_source = data_source
+class TopicSampler(BatchSampler):
+    def __init__(self, sampler: SequentialSampler, batch_size: int = 1, drop_last: bool = False) -> None:
+        super().__init__(sampler, batch_size, drop_last)
+        self.batch_size = batch_size
+        self.drop_last = drop_last
+        self.data_source = sampler.data_source
         labels = self.data_source[:][1]
         self.topic_idx = (torch.diff(
                 labels,
@@ -278,6 +280,9 @@ class MyClassifier(pl.LightningModule):
         self.rec.reset()
         self.shift.reset()
         self.shift2.reset()
+    
+    def predict_step(self, batch: Any, batch_idx: int, dataloader_idx: int = 0) -> Any:
+        return torch.argmax(self(batch[0]), dim=-1)
 
     def configure_optimizers(self):
         optimizer = torch.optim.Adam(self.parameters(), lr=self.lr, weight_decay=self.weight_decay)
@@ -408,11 +413,14 @@ def cross_validate(
         max_time = None,
         num_workers: int = 10,
         deterministic: bool = False,
-        temp_model_savepath: str = 'temp_model.pt'
-) -> pd.DataFrame:
+        # temp_model_savepath: str = 'temp_model.pt',
+        topic_names: pd.Series | None = None
+) -> pd.DataFrame | Tuple[pd.DataFrame, pd.DataFrame]:
     folds = fold_dataset(ds, groups, n_splits)
     stats = []
     init_state_dict = model.state_dict()
+    if topic_names is not None:
+        dfs = []
     for train_ds, test_ds, val_ds in tqdm(folds):
         model.load_state_dict(init_state_dict)
         if use_weights:
@@ -421,16 +429,30 @@ def cross_validate(
 
         trainer = train_model(model, train_ds, val_ds, precision, batch_size, max_epochs, max_time, num_workers, False, deterministic)
 
-        test_dl = DataLoader(test_ds, batch_sampler=TopicSampler(test_ds), num_workers=num_workers, pin_memory=True)
+        test_dl = DataLoader(test_ds, batch_sampler=TopicSampler(SequentialSampler(test_ds)), num_workers=num_workers, pin_memory=True)
         test_results = trainer.test(dataloaders=test_dl, ckpt_path='best', verbose=False)[0]
         stats.append(test_results)
+
+        if topic_names is not None:
+            shift, preds, topic_idx = get_predictions(model, test_ds, num_workers, precision, deterministic)
+            dfs.append(pd.DataFrame({'shift': shift, 'pred': [pred.numpy() for pred in preds], 'group': groups[test_ds.indices[topic_idx]]}))
     stats = pd.DataFrame(stats)
     print(stats)
     print('Means:')
     print(stats.mean(axis=0))
     print('Standard deviation:')
     print(stats.std(axis=0))
-    return stats
+    if topic_names is not None:
+        df = pd.concat(dfs, ignore_index=True)
+        df['name'] = df['group'].apply(lambda x: topic_names.values[x])
+        df = df[['name', 'pred', 'shift']]
+        return stats, df
+    else:
+        return stats
+
+def split_topics(labels: torch.Tensor):
+    sections = (torch.diff(labels) == -1).nonzero().squeeze(1)
+    return torch.split(labels, sections)
 
 def get_shifts(y_true: torch.Tensor, y_pred: torch.Tensor) -> torch.Tensor:
     sequence_idx = (torch.diff(y_true, prepend=torch.tensor([1], device=y_true.device), append=torch.tensor([0], device=y_true.device)) == -1).nonzero().squeeze()
@@ -482,15 +504,19 @@ def save_shift(model: pl.LightningModule, test_ds: Dataset, crisis_names: Iterab
     with open(filename, 'w') as f:
         json.dump(d, f)
 
-def get_predictions(model: pl.LightningModule, ds: Dataset, batch_size: int = 256, num_workers: int = 10, precision: str = 'bf16-mixed', deterministic: bool = False):
-    X, y_true = ds[:]
-    dl = DataLoader(TensorDataset(X), batch_size, num_workers=num_workers, pin_memory=True)
+def get_predictions(model: MyClassifier, ds: Dataset, num_workers: int = 10, precision: str = 'bf16-mixed', deterministic: bool = False):
+    _, y_true = ds[:]
+    dl = DataLoader(ds, batch_sampler=TopicSampler(SequentialSampler(ds)), num_workers=num_workers, pin_memory=True)
     trainer = pl.Trainer(precision=precision, logger=False, deterministic=deterministic)
-    y_pred = torch.argmax(torch.cat(trainer.predict(model, dl, ckpt_path='best'), dim=0), dim=-1)
+    y_pred = torch.cat(trainer.predict(model, dl), dim=0)
     metric = ShiftMetric(absolute=False)
-    shifts = metric(y_pred, y_true)
-    topics = (torch.diff(y_true) == -1).nonzero().squeeze(1)
-    return shifts, torch.split(y_pred, topics.tolist())
+    topics = ((torch.diff(y_true) == -1).nonzero().squeeze(1) + 1).tolist()
+    y_trues = torch.tensor_split(y_true, topics)
+    y_preds = torch.tensor_split(y_pred, topics)
+    for p, t in zip(y_preds, y_trues):
+        metric.update(p, t)
+    shifts = metric.compute()
+    return shifts, y_preds, [0] + topics
 
 def main():
     deterministic = True
@@ -551,7 +577,10 @@ def main():
     # test_dl = DataLoader(test_ds, batch_sampler=TopicSampler(test_ds), num_workers=10, pin_memory=True)
     # trainer.test(dataloaders=test_dl, ckpt_path='best', verbose=True)
 
-    cross_validate(MyTransformer(), ds, groups, n_splits=5, precision='bf16-mixed', deterministic=deterministic)
+    data = get_data_with_dates(get_all_data())
+
+    stats, df = cross_validate(MyTransformer(), ds, groups, n_splits=5, precision='bf16-mixed', deterministic=deterministic, topic_names=data['name'])
+    df.to_feather('saved_objects/predictions.feather')
 
 if __name__ == '__main__':
     main()
