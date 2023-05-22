@@ -383,7 +383,7 @@ class MyTransformer(MyClassifier):
         )
         self.positional_encoding = PositionalEncoding(self.hidden_dim)
         self.transformer = nn.TransformerEncoder(
-            nn.TransformerEncoderLayer(self.hidden_dim, self.n_heads, activation=nn.functional.leaky_relu, batch_first=True),
+            nn.TransformerEncoderLayer(self.hidden_dim, self.n_heads, activation=nn.functional.tanh, batch_first=True),
             self.transformer_layers
         )
         self.output_net = nn.Sequential(

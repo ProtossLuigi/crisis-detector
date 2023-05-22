@@ -70,10 +70,10 @@ def extract_data(
         filename: str,
         crisis_start: pd.Timestamp | None = None,
         num_samples: int = 0,
-        window_size: int | Tuple[int, int] | None = (60, 30),
+        window_size: int | Tuple[int, int] | None = (59, 30),
         drop_invalid: bool = False
 ) -> Tuple[pd.DataFrame, pd.DataFrame] | None:
-    src_df = pd.read_excel(filename)
+    src_df = pd.read_excel(filename).sort_values('Data wydania', ignore_index=True)
     
     new_cols = ['brak', 'negatywny', 'neutralny', 'pozytywny']
     new_cols_ex = [c for c in new_cols if c in src_df['Wydźwięk'].unique().tolist()]
@@ -85,7 +85,6 @@ def extract_data(
     if crisis_start is not None:
         src_df['label'] = src_df['Data wydania'] >= crisis_start
     else:
-        
         if src_df['Kryzys'].hasnans:
             if src_df['Kryzys'].nunique(dropna=False) != 2:
                 if drop_invalid:
@@ -110,7 +109,10 @@ def extract_data(
     df['suma'] = df[new_cols].sum(axis=1)
     df = df.join(src_df[['Data wydania', 'label']].groupby('Data wydania').any())
     if df['label'].hasnans:
-        df['label'] = df['label'].bfill() & df['label'].ffill()
+        if crisis_start is None:
+            df['label'] = df['label'].bfill() & df['label'].ffill()
+        else:
+            df['label'] = df.index >= crisis_start
 
     if np.unique(df['label']).shape[0] != 2:
         if drop_invalid:
@@ -137,7 +139,7 @@ def extract_data(
 def load_data(
         filenames: Iterable[str], crisis_dates: Iterable[pd.Timestamp] | None = None, num_samples: int = 0, drop_invalid: bool = False
 ) -> Tuple[pd.DataFrame, pd.DataFrame]:
-    if not crisis_dates:
+    if crisis_dates is None:
         crisis_dates = [None] * len(filenames)
     assert len(filenames) == len(crisis_dates)
     dfs, text_dfs = [], []
