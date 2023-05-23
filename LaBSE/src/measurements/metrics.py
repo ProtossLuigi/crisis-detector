@@ -21,7 +21,7 @@ class ClassificationMetrics(object):
     
     def _init_metrics(self, average):
         return {
-            k: v(num_classes=self.num_classes, average=average) 
+            k: v(task='multilabel', num_labels=self.num_classes, average=average) 
             for k, v in self.__metric_types.items()
         }
         

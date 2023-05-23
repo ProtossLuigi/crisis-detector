@@ -14,3 +14,4 @@ tqdm
 ipykernel
 ipywidgets
 seaborn
+h5py

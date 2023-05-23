@@ -19,13 +19,15 @@ from transformers import AutoTokenizer
 from sklearn.preprocessing import StandardScaler
 
 from embedder import TextEmbedder
-from data_tools import load_data, SeriesDataset, get_all_data, get_data_with_dates
+from data_tools import load_data, SeriesDataset, get_all_data, get_data_with_dates, get_full_text_data
 from training_tools import split_dataset, train_model, test_model, fold_dataset, init_trainer
 from aggregator import EmbeddingAggregator, MeanAggregator
 
 torch.set_float32_matmul_precision('high')
 
-def add_embeddings(days_df: pd.DataFrame, text_df: pd.DataFrame, embeddings: List[torch.Tensor] | torch.Tensor, aggregator: EmbeddingAggregator) -> pd.DataFrame:
+def add_embeddings(
+        days_df: pd.DataFrame, text_df: pd.DataFrame, embeddings: List[torch.Tensor] | torch.Tensor, aggregator: EmbeddingAggregator, features: pd.Series | None = None
+) -> pd.DataFrame:
     if type(embeddings) == list:
         embeddings = torch.cat(embeddings, dim=0)
     # embeddings = embeddings.numpy()
@@ -520,7 +522,7 @@ def get_predictions(model: MyClassifier, ds: Dataset, num_workers: int = 10, pre
 
 def main():
     deterministic = True
-    end_to_end = False
+    end_to_end = True
     text_samples = 50
 
     if deterministic:
@@ -532,9 +534,9 @@ def main():
 
     if end_to_end or not (os.path.isfile(DAYS_DF_PATH) and os.path.isfile(POSTS_DF_PATH)):
 
-        data = get_data_with_dates(get_all_data())
+        data = get_data_with_dates(get_full_text_data())
 
-        days_df, text_df = load_data(data['path'].to_list(), data['crisis_start'].to_list(), text_samples, True)
+        days_df, text_df = load_data(data, text_samples, True)
         days_df.to_feather(DAYS_DF_PATH)
         text_df.to_feather(POSTS_DF_PATH)
 
@@ -564,7 +566,14 @@ def main():
         with open(EMBEDDINGS_PATH, 'rb') as f:
             embeddings = torch.load(f)
 
-    aggregator = MeanAggregator()
+    # print(text_df[text_df['name'] == ' konflikt z Mają Staśko'])
+    # print(get_data_with_dates(get_full_text_data()))
+
+    features_df = pd.merge(text_df[['name', 'id']], pd.read_feather('saved_objects/full_text_df.feather'), how='inner', left_on=['name', 'id'], right_on=['topic', 'id'])
+    # print(features_df[features_df['emotions'].isna()])
+    embeddings = torch.cat((embeddings, torch.tensor(np.stack(features_df['emotions']))), dim=-1)
+
+    aggregator = MeanAggregator(embedding_dim=embeddings.shape[1])
     days_df = add_embeddings(days_df, text_df, embeddings, aggregator)
     ds, groups = create_dataset(days_df)
 

@@ -76,8 +76,10 @@ def extract_data(
     src_df = pd.read_excel(filename).sort_values('Data wydania', ignore_index=True)
     
     new_cols = ['brak', 'negatywny', 'neutralny', 'pozytywny']
-    new_cols_ex = [c for c in new_cols if c in src_df['Wydźwięk'].unique().tolist()]
-    src_df[new_cols_ex] = pd.get_dummies(src_df['Wydźwięk'])
+    sent_col = 'Wydźwięk' if 'Wydźwięk' in src_df.columns else 'Sentyment'
+    text_col = 'Kontekst publikacji' if 'Kontekst publikacji' in src_df.columns else 'OCR'
+    new_cols_ex = [c for c in new_cols if c in src_df[sent_col].unique().tolist()]
+    src_df[new_cols_ex] = pd.get_dummies(src_df[sent_col])
     for col in new_cols:
         if col not in src_df.columns:
             src_df[col] = 0
@@ -125,38 +127,37 @@ def extract_data(
         else:
             warn(f'No data after clipping for {filename}.')
 
-    text = src_df.apply(lambda x: " . ".join([str(x['Tytuł publikacji']), str(x['Lead']), str(x['Kontekst publikacji'])]), axis=1)
+    text = src_df.apply(lambda x: " . ".join([str(x['Tytuł publikacji']), str(x['Lead']), str(x[text_col])]), axis=1)
     text_df = src_df[['Data wydania', 'label']].copy()
     text_df['text'] = text
     texts = []
     for date in df.index:
         daily_posts = text_df[text_df['Data wydania'] == date]
         texts.append(daily_posts if num_samples == 0 or daily_posts.shape[0] <= num_samples else daily_posts.sample(n=num_samples))
-    text_df = pd.concat(texts).reset_index(drop=True)
+    text_df = pd.concat(texts).reset_index(names='id')
     
     return df, text_df
 
 def load_data(
-        filenames: Iterable[str], crisis_dates: Iterable[pd.Timestamp] | None = None, num_samples: int = 0, drop_invalid: bool = False
+        metadata: pd.DataFrame, num_samples: int = 0, drop_invalid: bool = False
 ) -> Tuple[pd.DataFrame, pd.DataFrame]:
-    if crisis_dates is None:
-        crisis_dates = [None] * len(filenames)
-    assert len(filenames) == len(crisis_dates)
+    if 'crisis_start' not in metadata.columns:
+        metadata['crisis_start'] = None
     dfs, text_dfs = [], []
-    for i, (fname, date) in enumerate(tqdm(zip(filenames, crisis_dates), total=len(filenames))):
+    for i, row in enumerate(tqdm(metadata.itertuples(), total=len(metadata))):
         try:
-            dfp = extract_data(fname, date, num_samples, drop_invalid=drop_invalid)
+            dfp = extract_data(row.path, row.crisis_start, num_samples, drop_invalid=drop_invalid)
             if dfp is None:
                 continue
-        except KeyError:
-            warn(f'Missing column in {fname}. Skipping...')
+        except KeyError as e:
+            warn(f'Missing column {e.args[0]} in {row.path}. Skipping...')
             continue
         df, text_df = dfp
         df = df.reset_index(names='Data wydania')
         df['group'] = i
-        df['name'] = os.path.basename(fname)
+        df['name'] = row.name
         text_df['group'] = i
-        text_df['name'] = os.path.basename(fname)
+        text_df['name'] = row.name
         dfs.append(df)
         text_dfs.append(text_df)
     return pd.concat(dfs, ignore_index=True), pd.concat(text_dfs, ignore_index=True)
