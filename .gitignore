@@ -135,3 +135,5 @@ checkpoints/
 dane/
 saved_objects/
 plots/
+config.yml
+token.txt
