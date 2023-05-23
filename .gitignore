@@ -137,3 +137,4 @@ saved_objects/
 plots/
 config.yml
 token.txt
+LaBSE/models/tf_model.h5
