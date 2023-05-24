@@ -24,16 +24,17 @@ from crisis_detector import MyClassifier, ShiftMetric, Shift2Metric
 torch.set_float32_matmul_precision('high')
 
 class CombinedDataset(Dataset):
-    def __init__(self, day_features: torch.Tensor, tokens: List[dict], sections: List[List[int]], labels: torch.Tensor) -> None:
+    def __init__(self, day_features: torch.Tensor, input_ids: torch.Tensor, attention_mask: torch.Tensor, post_counts: List[int], labels: torch.Tensor) -> None:
         super().__init__()
 
         self.day_features = day_features
-        self.tokens = tokens
-        self.sections = sections
+        self.input_ids = input_ids
+        self.attention_mask = attention_mask
+        self.post_counts = post_counts
         self.labels = labels
     
     def __getitem__(self, index) -> Any:
-        return self.day_features[index], self.tokens[index], self.sections[index], self.labels[index]
+        return self.day_features[index], self.input_ids[index], self.sections[index], self.labels[index]
 
     def __len__(self) -> int:
         return len(self.labels)
@@ -164,10 +165,9 @@ def tokenize_dataset(text: List[str], tokenizer_name: str = 'xlm-roberta-base', 
 
 def get_day_splits(days_df: pd.DataFrame, text_df: pd.DataFrame) -> List[int]:
     combined_df = pd.merge(days_df[['group', 'Data wydania']], text_df, how='left', on=['group', 'Data wydania'])
-    empty_days = combined_df[combined_df['text'].isna()].index
-    sections = [0] + np.cumsum(text_df.groupby(['group', 'Data wydania']).count()['text']).tolist()
-    #TODO
-    return sections
+    # empty_days = combined_df[combined_df['text'].isna()].index
+    sections = combined_df.groupby(['group', 'Data wydania'], dropna=False)['text'].count()
+    return sections.to_list()
 
 def get_day_features(df: pd.DataFrame) -> Tuple[torch.Tensor, torch.Tensor, pd.Series]:
     numeric_cols = ['brak', 'pozytywny', 'neutralny', 'negatywny', 'suma']
@@ -230,13 +230,14 @@ def main():
     
     DAYS_DF_PATH = 'saved_objects/days_df.feather'
     POSTS_DF_PATH = 'saved_objects/posts_df' + str(text_samples) + '.feather'
-    TOKENS_PATH = 'saved_objects/tokens' + str(text_samples) + '.json'
+    INPUT_IDS_PATH = 'saved_objects/input_ids' + str(text_samples) + '.json'
+    ATTENTION_MASK_PATH = 'saved_objects/attention_mask' + str(text_samples) + '.json'
 
     if end_to_end or not (os.path.isfile(DAYS_DF_PATH) and os.path.isfile(POSTS_DF_PATH)):
 
         data = get_data_with_dates(get_all_data())
 
-        days_df, text_df = load_data(data['path'].to_list(), data['crisis_start'].to_list(), text_samples, True)
+        days_df, text_df = load_data(data, text_samples, True)
         days_df.to_feather(DAYS_DF_PATH)
         text_df.to_feather(POSTS_DF_PATH)
 
@@ -246,19 +247,19 @@ def main():
         days_df = pd.read_feather(DAYS_DF_PATH)
         text_df = pd.read_feather(POSTS_DF_PATH)
     
-    if end_to_end or not os.path.isfile(TOKENS_PATH):
-        tokens = tokenize_dataset(text_df['text'].to_list(), batch_size=256)
+    if end_to_end or not (os.path.isfile(INPUT_IDS_PATH) and os.path.isfile(ATTENTION_MASK_PATH)):
+        input_ids, attention_mask = tokenize_dataset(text_df['text'].to_list(), batch_size=256)
 
-        with open(TOKENS_PATH, 'w') as f:
-            json.dump(tokens, f)
+        torch.save(input_ids, INPUT_IDS_PATH)
+        torch.save(attention_mask, ATTENTION_MASK_PATH)
         
         if deterministic:
             seed_everything(42, workers=True)
     else:
-        with open(TOKENS_PATH, 'r') as f:
-            tokens = json.load(f)
+        input_ids = torch.load(INPUT_IDS_PATH)
+        attention_mask = torch.load(ATTENTION_MASK_PATH)
     
-
+    sections = get_day_splits(days_df, text_df)
 
 if __name__ == '__main__':
     main()

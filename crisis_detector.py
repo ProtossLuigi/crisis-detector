@@ -26,11 +26,11 @@ from aggregator import EmbeddingAggregator, MeanAggregator
 torch.set_float32_matmul_precision('high')
 
 def add_embeddings(
-        days_df: pd.DataFrame, text_df: pd.DataFrame, embeddings: List[torch.Tensor] | torch.Tensor, aggregator: EmbeddingAggregator, features: pd.Series | None = None
+        days_df: pd.DataFrame, text_df: pd.DataFrame, embeddings: List[torch.Tensor] | torch.Tensor, aggregator: EmbeddingAggregator
 ) -> pd.DataFrame:
     if type(embeddings) == list:
         embeddings = torch.cat(embeddings, dim=0)
-    # embeddings = embeddings.numpy()
+    embedding_len = embeddings.shape[1]
     sections = np.cumsum(text_df.groupby(['group', 'Data wydania']).count()['text']).tolist()[:-1]
     embeddings = torch.vsplit(embeddings, sections)
     if aggregator.sample_size:
@@ -41,7 +41,7 @@ def add_embeddings(
     embedding_df = text_df[['group', 'Data wydania']].drop_duplicates().reset_index(drop=True)
     embedding_df['embedding'] = day_embeddings.tolist()
     days_df = days_df.join(embedding_df.set_index(['group', 'Data wydania']), ['group', 'Data wydania'], how='left')
-    days_df.loc[:, 'embedding'].iloc[days_df['embedding'].isna()] = pd.Series(np.zeros((days_df['embedding'].isna().sum(), 768)).tolist())
+    days_df.loc[:, 'embedding'].iloc[days_df['embedding'].isna()] = pd.Series(np.zeros((days_df['embedding'].isna().sum(), embedding_len)).tolist())
     return days_df
 
 def create_dataset(df: pd.DataFrame, sequence_len: int = 30) -> Tuple[TensorDataset, torch.Tensor]:
@@ -569,9 +569,8 @@ def main():
     # print(text_df[text_df['name'] == ' konflikt z Mają Staśko'])
     # print(get_data_with_dates(get_full_text_data()))
 
-    features_df = pd.merge(text_df[['name', 'id']], pd.read_feather('saved_objects/full_text_df.feather'), how='inner', left_on=['name', 'id'], right_on=['topic', 'id'])
-    # print(features_df[features_df['emotions'].isna()])
-    embeddings = torch.cat((embeddings, torch.tensor(np.stack(features_df['emotions']))), dim=-1)
+    # features_df = pd.merge(text_df[['name', 'id']], pd.read_feather('saved_objects/full_text_df.feather'), how='inner', left_on=['name', 'id'], right_on=['topic', 'id'])
+    # embeddings = torch.cat((embeddings, torch.tensor(np.stack(features_df['emotions']))), dim=-1)
 
     aggregator = MeanAggregator(embedding_dim=embeddings.shape[1])
     days_df = add_embeddings(days_df, text_df, embeddings, aggregator)
@@ -588,7 +587,7 @@ def main():
 
     data = get_data_with_dates(get_all_data())
 
-    stats, df = cross_validate(MyTransformer(), ds, groups, n_splits=5, precision='bf16-mixed', deterministic=deterministic, topic_names=data['name'])
+    stats, df = cross_validate(MyTransformer(input_dim=ds[0][0].shape[-1]), ds, groups, n_splits=5, precision='bf16-mixed', deterministic=deterministic, topic_names=data['name'])
     df.to_feather('saved_objects/predictions.feather')
 
 if __name__ == '__main__':

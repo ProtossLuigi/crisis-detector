@@ -24,7 +24,7 @@ def main():
 
     for i in tqdm(range(0, len(texts), batch_size)):
         out = model(texts[i:i+batch_size])
-        outs.append(out[0].cpu())
+        outs.append(out[1].cpu().detach())
     torch.save(torch.cat(outs, dim=0), '/home/proto/repos/crisis-detector/saved_objects/emotions.pt')
     
     
