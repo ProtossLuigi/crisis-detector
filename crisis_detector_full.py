@@ -24,7 +24,14 @@ from crisis_detector import MyClassifier, ShiftMetric, Shift2Metric
 torch.set_float32_matmul_precision('high')
 
 class CombinedDataset(Dataset):
-    def __init__(self, day_features: torch.Tensor, input_ids: torch.Tensor, attention_mask: torch.Tensor, post_counts: List[int], labels: torch.Tensor) -> None:
+    def __init__(
+            self,
+            day_features: torch.Tensor,
+            input_ids: List[torch.Tensor],
+            attention_mask: List[torch.Tensor],
+            post_counts: List[List[int]],
+            labels: torch.Tensor
+    ) -> None:
         super().__init__()
 
         self.day_features = day_features
@@ -34,10 +41,21 @@ class CombinedDataset(Dataset):
         self.labels = labels
     
     def __getitem__(self, index) -> Any:
-        return self.day_features[index], self.input_ids[index], self.sections[index], self.labels[index]
+        return (
+            self.day_features[index],
+            self.input_ids[index],
+            self.attention_mask[index],
+            self.post_counts[index],
+            self.labels[index]
+        )
 
     def __len__(self) -> int:
         return len(self.labels)
+    
+    @staticmethod
+    def collate(batch):
+        batch = tuple(zip(*batch))
+        return torch.stack(batch[0]), torch.cat(batch[1]), torch.cat(batch[2]), [post_count for post_counts in batch[3] for post_count in post_counts], torch.stack(batch[4])
 
 class CrisisDetector(pl.LightningModule):
     def __init__(
@@ -163,11 +181,10 @@ def tokenize_dataset(text: List[str], tokenizer_name: str = 'xlm-roberta-base', 
         attention_mask = tokens['attention_mask']
     return input_ids, attention_mask
 
-def get_day_splits(days_df: pd.DataFrame, text_df: pd.DataFrame) -> List[int]:
+def get_day_splits(days_df: pd.DataFrame, text_df: pd.DataFrame) -> torch.Tensor:
     combined_df = pd.merge(days_df[['group', 'Data wydania']], text_df, how='left', on=['group', 'Data wydania'])
-    # empty_days = combined_df[combined_df['text'].isna()].index
     sections = combined_df.groupby(['group', 'Data wydania'], dropna=False)['text'].count()
-    return sections.to_list()
+    return torch.Tensor(sections)
 
 def get_day_features(df: pd.DataFrame) -> Tuple[torch.Tensor, torch.Tensor, pd.Series]:
     numeric_cols = ['brak', 'pozytywny', 'neutralny', 'negatywny', 'suma']
@@ -198,27 +215,29 @@ def create_dataset(
         features: torch.Tensor,
         input_ids: torch.Tensor,
         attention_mask: torch.Tensor,
-        sections: List[int],
+        post_counts: torch.Tensor,
         labels: torch.Tensor,
         groups: pd.Series,
         sequence_len: int = 30
 ) -> Dataset:
+    input_ids = torch
     seq_features = []
     seq_input_ids = []
     seq_attention_mask = []
-    seq_sections = []
+    seq_post_counts = []
     seq_labels = []
     seq_groups = []
     for g in groups.unique():
         selector = groups == g
         features_g = features[selector]
-        input_ids_g = input_ids[selector]
-        attention_mask_g = attention_mask[selector]
+        post_counts_g = post_counts[selector]
+        input_ids_g = torch.split(input_ids[selector], post_counts_g)
+        attention_mask_g = torch.split(attention_mask[selector], post_counts_g)
         labels_g = labels[selector]
-
-
-
-        # TODO
+        for i in range(sum(selector) - sequence_len + 1):
+            seq_features.append(features_g[i:i+sequence_len])
+            seq_input_ids.append(input_ids_g)
+            #TODO
 
 def main():
     deterministic = True

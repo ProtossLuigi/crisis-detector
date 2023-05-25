@@ -71,7 +71,8 @@ def extract_data(
         crisis_start: pd.Timestamp | None = None,
         num_samples: int = 0,
         window_size: int | Tuple[int, int] | None = (59, 30),
-        drop_invalid: bool = False
+        drop_invalid: bool = False,
+        class_balance: float | None = None
 ) -> Tuple[pd.DataFrame, pd.DataFrame] | None:
     src_df = pd.read_excel(filename).sort_values('Data wydania', ignore_index=True)
     
@@ -133,7 +134,12 @@ def extract_data(
     texts = []
     for date in df.index:
         daily_posts = text_df[text_df['Data wydania'] == date]
-        texts.append(daily_posts if num_samples == 0 or daily_posts.shape[0] <= num_samples else daily_posts.sample(n=num_samples))
+        if class_balance is None:
+            texts.append(daily_posts if num_samples == 0 or daily_posts.shape[0] <= num_samples else daily_posts.sample(n=num_samples))
+        else:
+            
+            #TODO
+            raise NotImplementedError()
     text_df = pd.concat(texts).reset_index(names='id')
     
     return df, text_df
