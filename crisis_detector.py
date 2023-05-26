@@ -522,7 +522,7 @@ def get_predictions(model: MyClassifier, ds: Dataset, num_workers: int = 10, pre
 
 def main():
     deterministic = True
-    end_to_end = True
+    end_to_end = False
     text_samples = 50
 
     if deterministic:
@@ -534,9 +534,9 @@ def main():
 
     if end_to_end or not (os.path.isfile(DAYS_DF_PATH) and os.path.isfile(POSTS_DF_PATH)):
 
-        data = get_data_with_dates(get_full_text_data())
+        data = get_data_with_dates(get_all_data())
 
-        days_df, text_df = load_data(data, text_samples, True)
+        days_df, text_df = load_data(data, text_samples, True, None)
         days_df.to_feather(DAYS_DF_PATH)
         text_df.to_feather(POSTS_DF_PATH)
 
@@ -566,11 +566,13 @@ def main():
         with open(EMBEDDINGS_PATH, 'rb') as f:
             embeddings = torch.load(f)
 
-    # print(text_df[text_df['name'] == ' konflikt z Mają Staśko'])
     # print(get_data_with_dates(get_full_text_data()))
 
     # features_df = pd.merge(text_df[['name', 'id']], pd.read_feather('saved_objects/full_text_df.feather'), how='inner', left_on=['name', 'id'], right_on=['topic', 'id'])
     # embeddings = torch.cat((embeddings, torch.tensor(np.stack(features_df['emotions']))), dim=-1)
+
+    post_features = torch.tensor(pd.get_dummies(text_df['Typ medium']).values, dtype=torch.float32)
+    embeddings = torch.cat((embeddings, post_features), dim=-1)
 
     aggregator = MeanAggregator(embedding_dim=embeddings.shape[1])
     days_df = add_embeddings(days_df, text_df, embeddings, aggregator)
@@ -585,10 +587,8 @@ def main():
     # test_dl = DataLoader(test_ds, batch_sampler=TopicSampler(test_ds), num_workers=10, pin_memory=True)
     # trainer.test(dataloaders=test_dl, ckpt_path='best', verbose=True)
 
-    data = get_data_with_dates(get_all_data())
-
-    stats, df = cross_validate(MyTransformer(input_dim=ds[0][0].shape[-1]), ds, groups, n_splits=5, precision='bf16-mixed', deterministic=deterministic, topic_names=data['name'])
-    df.to_feather('saved_objects/predictions.feather')
+    stats = cross_validate(MyTransformer(input_dim=ds[0][0].shape[-1]), ds, groups, n_splits=5, precision='bf16-mixed', deterministic=deterministic)
+    # df.to_feather('saved_objects/predictions.feather')
 
 if __name__ == '__main__':
     main()

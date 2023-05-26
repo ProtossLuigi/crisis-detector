@@ -129,30 +129,36 @@ def extract_data(
             warn(f'No data after clipping for {filename}.')
 
     text = src_df.apply(lambda x: " . ".join([str(x['Tytuł publikacji']), str(x['Lead']), str(x[text_col])]), axis=1)
-    text_df = src_df[['Data wydania', 'label']].copy()
+    text_df = src_df[['Data wydania', 'label', 'Typ medium']].copy()
     text_df['text'] = text
     texts = []
     for date in df.index:
         daily_posts = text_df[text_df['Data wydania'] == date]
-        if class_balance is None:
-            texts.append(daily_posts if num_samples == 0 or daily_posts.shape[0] <= num_samples else daily_posts.sample(n=num_samples))
+        if class_balance is not None and daily_posts['label'].any():
+            total_samples = len(daily_posts)
+            pos_samples = sum(daily_posts['label'])
+            neg_samples = sum(~daily_posts['label'])
+            ratio = min(total_samples / num_samples, pos_samples / (num_samples * class_balance), neg_samples / (num_samples * (1. - class_balance)), 1.)
+            if ratio == 0.:
+                continue
+            posts_pos = daily_posts[daily_posts['label']].sample(n=int(num_samples * ratio * class_balance))
+            posts_neg = daily_posts[~daily_posts['label']].sample(n=int(num_samples * ratio * (1. - class_balance)))
+            texts.append((posts_neg + posts_pos).sort_index())
         else:
-            
-            #TODO
-            raise NotImplementedError()
+            texts.append(daily_posts if num_samples == 0 or daily_posts.shape[0] <= num_samples else daily_posts.sample(n=num_samples))
     text_df = pd.concat(texts).reset_index(names='id')
     
     return df, text_df
 
 def load_data(
-        metadata: pd.DataFrame, num_samples: int = 0, drop_invalid: bool = False
+        metadata: pd.DataFrame, num_samples: int = 0, drop_invalid: bool = False, class_balance: float | None = None
 ) -> Tuple[pd.DataFrame, pd.DataFrame]:
     if 'crisis_start' not in metadata.columns:
         metadata['crisis_start'] = None
     dfs, text_dfs = [], []
     for i, row in enumerate(tqdm(metadata.itertuples(), total=len(metadata))):
         try:
-            dfp = extract_data(row.path, row.crisis_start, num_samples, drop_invalid=drop_invalid)
+            dfp = extract_data(row.path, row.crisis_start, num_samples, drop_invalid=drop_invalid, class_balance=class_balance)
             if dfp is None:
                 continue
         except KeyError as e:
