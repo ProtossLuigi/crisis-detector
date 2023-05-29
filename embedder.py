@@ -34,7 +34,11 @@ class TextEmbedder(pl.LightningModule):
 
         self.save_hyperparameters()
     
-    def forward(self, x) -> Any:
+    def forward(self, *args, **kwargs) -> Any:
+        if args:
+            x = args[0]
+        else:
+            x = kwargs
         return self.model(input_ids=x['input_ids'], attention_mask=x['attention_mask'])
     
     def training_step(self, batch, batch_idx):
