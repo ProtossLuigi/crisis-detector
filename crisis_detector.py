@@ -179,6 +179,7 @@ class MyClassifier(pl.LightningModule):
     def __init__(
             self,
             input_dim: int = 782,
+            sequence_length: int = 30,
             lr: float = 0.001,
             weight_decay: float = 0.01,
             class_ratios: torch.Tensor | None = None,
@@ -191,6 +192,7 @@ class MyClassifier(pl.LightningModule):
             self.input_dim = len(range(*self.input_limit.indices(input_dim)))
         else:
             self.input_dim = input_dim
+        self.sequence_length = sequence_length
         self.lr = lr
         self.weight_decay = weight_decay
         self.print_test_samples = print_test_samples
@@ -383,12 +385,14 @@ class MyTransformer(MyClassifier):
             nn.Dropout(.1),
             nn.Tanh(),
         )
-        self.positional_encoding = PositionalEncoding(self.hidden_dim)
+        self.positional_encoding = PositionalEncoding(self.hidden_dim, max_len=self.sequence_length)
         self.transformer = nn.TransformerEncoder(
             nn.TransformerEncoderLayer(self.hidden_dim, self.n_heads, activation=nn.functional.tanh, batch_first=True),
             self.transformer_layers
         )
         self.output_net = nn.Sequential(
+            nn.AdaptiveAvgPool1d(1),
+            nn.Flatten(),
             nn.Dropout(.1),
             nn.Linear(self.hidden_dim, 2),
             nn.Softmax(dim=-1)
@@ -399,8 +403,8 @@ class MyTransformer(MyClassifier):
             x = x[..., self.input_limit]
         x = self.input_net(x)
         x = self.positional_encoding(x)
-        x = self.transformer(x)[:, -1]
-        x = self.output_net(x)
+        x = self.transformer(x)
+        x = self.output_net(x.permute(0, 2, 1))
         return x
 
 def cross_validate(

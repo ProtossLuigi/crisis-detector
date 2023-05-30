@@ -1,16 +1,14 @@
-from typing import Any, List, Tuple
+from typing import Any, Iterable, List, Tuple
 import os
 import numpy as np
 import pandas as pd
 from sklearn.preprocessing import StandardScaler
 from tqdm import tqdm
-from itertools import compress
-import json
 
 import torch
 from torch import nn
 from torch.optim.lr_scheduler import ReduceLROnPlateau
-from torch.utils.data import Dataset, DataLoader
+from torch.utils.data import Dataset, DataLoader, SequentialSampler
 from torch.nn.utils.rnn import pad_sequence
 import lightning as pl
 from lightning.pytorch import seed_everything
@@ -21,9 +19,12 @@ from data_tools import get_all_data, get_data_with_dates, load_data
 from training_tools import init_trainer, split_dataset, fold_dataset
 from embedder import TextEmbedder
 from aggregator import EmbeddingAggregator, MeanAggregator
-from crisis_detector import MyClassifier, ShiftMetric, Shift2Metric, MyTransformer
+from crisis_detector import MyClassifier, ShiftMetric, Shift2Metric, MyTransformer, TopicSampler
 
 torch.set_float32_matmul_precision('high')
+
+def merge_indices(*tensors) -> torch.Tensor:
+    return torch.cat(tensors).unique()
 
 class CombinedDataset(Dataset):
     def __init__(
@@ -32,9 +33,9 @@ class CombinedDataset(Dataset):
             post_features: torch.Tensor,
             input_ids: torch.Tensor,
             attention_mask: torch.Tensor,
-            daily_posts: List[List[int]],
-            post_counts: List[List[int]],
+            sequences: torch.Tensor,
             labels: torch.Tensor,
+            day_posts: List[torch.Tensor],
     ) -> None:
         super().__init__()
 
@@ -42,22 +43,36 @@ class CombinedDataset(Dataset):
         self.post_features = post_features
         self.input_ids = input_ids
         self.attention_mask = attention_mask
-        self.daily_posts = daily_posts
-        self.post_counts = post_counts
+        self.sequences = sequences
+        self.day_posts = day_posts
         self.labels = labels
+
+        self.month_posts = [merge_indices(*(self.day_posts[i] for i in indexes)) for indexes in self.sequences]
 
         assert len(self.input_ids) == len(self.attention_mask)
         if self.post_features is None:
             self.post_features = torch.empty((self.input_ids.shape[0], 0), dtype=torch.float32)
     
     def __getitem__(self, index) -> Any:
-        return (
-            self.day_features[index],
-            self.post_features[self.daily_posts[index]],
-            self.input_ids[self.daily_posts[index]],
-            self.attention_mask[self.daily_posts[index]],
-            self.post_counts[index],
-        ), self.labels[index]
+        if isinstance(index, int):
+            return (
+                self.day_features[self.sequences[index]],
+                self.post_features[self.month_posts[index]],
+                self.input_ids[self.month_posts[index]],
+                self.attention_mask[self.month_posts[index]],
+                self.sequences[index],
+                [self.day_posts[i] for i in self.sequences[index]]
+            )
+        elif isinstance(index, Iterable):
+            return (
+                self.day_features[merge_indices(*self.sequences[index])],
+                self.post_features[merge_indices(*self.month_posts[index])],
+                self.input_ids[merge_indices(*self.month_posts[index])],
+                self.attention_mask[merge_indices(*self.month_posts[index])],
+                self.sequences[index],
+                [self.day_posts[i] for i in self.sequences[index]]
+            )
+
 
     def __len__(self) -> int:
         return len(self.labels)
@@ -302,11 +317,11 @@ def train_test(
         max_time: Any | None = None, 
         deterministic: bool = False
 ):
-    trainer = init_trainer(precision, max_time=max_time, deterministic=deterministic)
+    trainer = init_trainer(precision, early_stopping=False, max_time=max_time, deterministic=deterministic)
     train_ds, test_ds = split_dataset(ds, groups, n_splits=10, validate=False)
     train_dl = DataLoader(train_ds, batch_size, shuffle=True, num_workers=10, collate_fn=CombinedDataset.collate, pin_memory=True)
     # val_dl = DataLoader(val_ds, batch_size, shuffle=False, num_workers=10, collate_fn=CombinedDataset.collate, pin_memory=True)
-    test_dl = DataLoader(test_ds, batch_size, shuffle=False, num_workers=10, collate_fn=CombinedDataset.collate, pin_memory=True)
+    test_dl = DataLoader(test_ds, batch_sampler=TopicSampler(SequentialSampler(test_ds)), num_workers=10, collate_fn=CombinedDataset.collate, pin_memory=True)
     trainer.fit(model, train_dl)
     trainer.test(model, test_dl, 'best')
 
@@ -360,6 +375,8 @@ def main():
         groups,
         text_df['group']
     )
+    print(ds[:])
+    return
     embedder = TextEmbedder('xlm-roberta-base')
     post_features = embedder.model.config.hidden_size + ds[0][0][1].shape[-1]
     aggregator = MeanAggregator(text_samples, post_features)
