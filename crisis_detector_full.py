@@ -47,7 +47,8 @@ class CombinedDataset(Dataset):
         self.day_posts = day_posts
         self.labels = labels
 
-        self.month_posts = [merge_indices(*(self.day_posts[i] for i in indexes)) for indexes in self.sequences]
+        self.month_posts = [torch.cat([self.day_posts[i] for i in indexes]) for indexes in self.sequences]
+        self.post_counts = torch.tensor([len(x) for x in self.day_posts])
 
         assert len(self.input_ids) == len(self.attention_mask)
         if self.post_features is None:
@@ -55,24 +56,25 @@ class CombinedDataset(Dataset):
     
     def __getitem__(self, index) -> Any:
         if isinstance(index, int):
+            day_indices = self.sequences[index]
+            post_indices = self.month_posts[index]
             return (
-                self.day_features[self.sequences[index]],
-                self.post_features[self.month_posts[index]],
-                self.input_ids[self.month_posts[index]],
-                self.attention_mask[self.month_posts[index]],
-                self.sequences[index],
-                [self.day_posts[i] for i in self.sequences[index]]
-            )
-        elif isinstance(index, Iterable):
+                self.day_features[day_indices],
+                self.post_features[post_indices],
+                self.input_ids[post_indices],
+                self.attention_mask[post_indices],
+                self.post_counts[day_indices]
+            ), self.labels[index]
+        else:
+            day_indices = self.sequences[index]
+            post_indices = torch.cat([self.month_posts[i] for i in index])
             return (
-                self.day_features[merge_indices(*self.sequences[index])],
-                self.post_features[merge_indices(*self.month_posts[index])],
-                self.input_ids[merge_indices(*self.month_posts[index])],
-                self.attention_mask[merge_indices(*self.month_posts[index])],
-                self.sequences[index],
-                [self.day_posts[i] for i in self.sequences[index]]
-            )
-
+                self.day_features[day_indices],
+                self.post_features[post_indices],
+                self.input_ids[post_indices],
+                self.attention_mask[post_indices],
+                self.post_counts[day_indices].flatten()
+            ), self.labels[index]
 
     def __len__(self) -> int:
         return len(self.labels)
@@ -86,7 +88,7 @@ class CombinedDataset(Dataset):
             torch.cat(X[1]),
             torch.cat(X[2]), 
             torch.cat(X[3]), 
-            [post_count for post_counts in X[4] for post_count in post_counts]
+            torch.cat(X[4])
         ), torch.stack(y)
 
 class CrisisDetector(pl.LightningModule):
@@ -126,7 +128,7 @@ class CrisisDetector(pl.LightningModule):
         self.class_weights = .5 / class_ratios if class_ratios else None
         self.loss_fn = nn.CrossEntropyLoss(self.class_weights)
     
-    def forward(self, day_features: torch.Tensor, post_features: torch.Tensor, input_ids: torch.Tensor, attention_mask: torch.Tensor, post_counts: List[int]) -> Any:
+    def forward(self, day_features: torch.Tensor, post_features: torch.Tensor, input_ids: torch.Tensor, attention_mask: torch.Tensor, post_counts: torch.Tensor) -> Any:
         if self.batch_size > 0:
             embeddings = []
             for i in range(0, input_ids.shape[0], self.batch_size):
@@ -238,6 +240,11 @@ def get_day_splits(days_df: pd.DataFrame, text_df: pd.DataFrame) -> torch.Tensor
     sections = combined_df.groupby(['group', 'Data wydania'], dropna=False)['text'].count()
     return torch.tensor(sections.values)
 
+def get_day_posts(days_df: pd.DataFrame, text_df: pd.DataFrame) -> torch.Tensor:
+    splits = get_day_splits(days_df, text_df)
+    splits = torch.cumsum(torch.cat(torch.tensor([0]), splits))
+    return [list(range(splits[i], splits[i+1])) for i in range(len(splits)-1)]
+
 def get_day_features(df: pd.DataFrame) -> Tuple[torch.Tensor, torch.Tensor, pd.Series]:
     numeric_cols = ['brak', 'pozytywny', 'neutralny', 'negatywny', 'suma']
     X = torch.tensor(df[numeric_cols].values, dtype=torch.long)
@@ -263,9 +270,9 @@ def get_day_features(df: pd.DataFrame) -> Tuple[torch.Tensor, torch.Tensor, pd.S
     return X, y, groups
 
 def create_dataset(
-        features: torch.Tensor,
-        input_ids: torch.Tensor,
+        day_features: torch.Tensor,
         post_features: torch.Tensor | None,
+        input_ids: torch.Tensor,
         attention_mask: torch.Tensor,
         post_counts: List[int],
         labels: torch.Tensor,
