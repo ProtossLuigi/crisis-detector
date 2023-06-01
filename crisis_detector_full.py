@@ -55,17 +55,17 @@ class CombinedDataset(Dataset):
             self.post_features = torch.empty((self.input_ids.shape[0], 0), dtype=torch.float32)
     
     def __getitem__(self, index) -> Any:
-        if isinstance(index, int):
+        if isinstance(index, slice):
             day_indices = self.sequences[index]
-            post_indices = self.month_posts[index]
+            post_indices = torch.cat(self.month_posts[index])
             return (
                 self.day_features[day_indices],
                 self.post_features[post_indices],
                 self.input_ids[post_indices],
                 self.attention_mask[post_indices],
-                self.post_counts[day_indices]
+                self.post_counts[day_indices].flatten()
             ), self.labels[index]
-        else:
+        elif isinstance(index, Iterable):
             day_indices = self.sequences[index]
             post_indices = torch.cat([self.month_posts[i] for i in index])
             return (
@@ -75,6 +75,18 @@ class CombinedDataset(Dataset):
                 self.attention_mask[post_indices],
                 self.post_counts[day_indices].flatten()
             ), self.labels[index]
+        else:
+            day_indices = self.sequences[index]
+            post_indices = self.month_posts[index]
+            return (
+                self.day_features[day_indices],
+                self.post_features[post_indices],
+                self.input_ids[post_indices],
+                self.attention_mask[post_indices],
+                self.post_counts[day_indices]
+            ), self.labels[index]
+        # else:
+        #     raise TypeError(f"Unexpected index type {type(index)}.")
 
     def __len__(self) -> int:
         return len(self.labels)
@@ -140,7 +152,7 @@ class CrisisDetector(pl.LightningModule):
         else:
             embeddings = self.embedder(input_ids=input_ids, attention_mask=attention_mask).hidden_states[0][:, 0, :]
         post_features = torch.cat((embeddings, post_features), dim=1)
-        post_features = pad_sequence(torch.split(post_features, post_counts), batch_first=True)
+        post_features = pad_sequence(torch.split(post_features, post_counts.tolist()), batch_first=True)
         if post_features.shape[1] < self.aggregator.sample_size:
             post_features = nn.functional.pad(post_features, (0, 0, 0, self.aggregator.sample_size - post_features.shape[1]))
         post_features = self.aggregator(post_features)
@@ -240,10 +252,10 @@ def get_day_splits(days_df: pd.DataFrame, text_df: pd.DataFrame) -> torch.Tensor
     sections = combined_df.groupby(['group', 'Data wydania'], dropna=False)['text'].count()
     return torch.tensor(sections.values)
 
-def get_day_posts(days_df: pd.DataFrame, text_df: pd.DataFrame) -> torch.Tensor:
+def get_day_posts(days_df: pd.DataFrame, text_df: pd.DataFrame) -> List[torch.Tensor]:
     splits = get_day_splits(days_df, text_df)
-    splits = torch.cumsum(torch.cat(torch.tensor([0]), splits))
-    return [list(range(splits[i], splits[i+1])) for i in range(len(splits)-1)]
+    splits = torch.cumsum(torch.cat((torch.tensor([0]), splits)), dim=0)
+    return [torch.tensor(range(splits[i], splits[i+1]), dtype=torch.int) for i in range(len(splits)-1)]
 
 def get_day_features(df: pd.DataFrame) -> Tuple[torch.Tensor, torch.Tensor, pd.Series]:
     numeric_cols = ['brak', 'pozytywny', 'neutralny', 'negatywny', 'suma']
@@ -270,49 +282,39 @@ def get_day_features(df: pd.DataFrame) -> Tuple[torch.Tensor, torch.Tensor, pd.S
     return X, y, groups
 
 def create_dataset(
-        day_features: torch.Tensor,
-        post_features: torch.Tensor | None,
+        days_df: pd.DataFrame,
+        text_df: pd.DataFrame,
         input_ids: torch.Tensor,
         attention_mask: torch.Tensor,
-        post_counts: List[int],
-        labels: torch.Tensor,
-        day_groups: pd.Series,
-        post_groups: pd.Series,
         sequence_len: int = 30
 ) -> Tuple[Dataset, torch.Tensor]:
+    day_features, labels, day_groups = get_day_features(days_df)
+    day_posts = get_day_posts(days_df, text_df)
+    post_features = None
+
     if post_features is None:
         post_features = torch.empty((input_ids.shape[0], 0), dtype=torch.float32)
-    if type(post_counts) != list:
-        post_counts = list(post_counts)
-    seq_day_features = []
-    daily_posts = [0] + np.cumsum(post_counts).tolist()
-    daily_posts = [list(range(daily_posts[i], daily_posts[i+1])) for i in range(len(daily_posts) - 1)]
-    seq_daily_posts = []
-    seq_post_counts = []
+    # if type(post_counts) != list:
+    #     post_counts = list(post_counts)
+    
+    sequences = []
     seq_labels = []
     seq_groups = []
     print('Creating dataset...')
     for g in tqdm(day_groups.unique()):
-        day_selector = day_groups == g
-        post_selector = post_groups == g
-        features_g = features[day_selector]
-        daily_posts_g = [daily_posts[i] for i in day_selector.index[day_selector]]
-        post_counts_g = [post_counts[i] for i in day_selector.index[day_selector]]
-        labels_g = labels[day_selector]
-        for i in range(sum(day_selector) - sequence_len + 1):
-            seq_day_features.append(features_g[i:i+sequence_len])
-            seq_daily_posts.append([id for post_ids in daily_posts_g[i:i+sequence_len] for id in post_ids])
-            seq_post_counts.append([x for x in post_counts_g[i:i+sequence_len]])
-            seq_labels.append(labels_g[i+sequence_len-1])
+        group_day_ids = torch.tensor(day_groups == g).nonzero().flatten()
+        for i in range(len(group_day_ids) - sequence_len + 1):
+            sequences.append(group_day_ids[i:i+sequence_len])
+            seq_labels.append(labels[group_day_ids[i+sequence_len-1]])
             seq_groups.append(g)
     return CombinedDataset(
-        torch.stack(seq_day_features),
+        day_features,
         post_features,
         input_ids,
         attention_mask,
-        seq_daily_posts,
-        seq_post_counts,
-        torch.stack(seq_labels)
+        torch.stack(sequences),
+        torch.stack(seq_labels),
+        day_posts
     ), torch.tensor(seq_groups)
 
 def train_test(
@@ -371,19 +373,12 @@ def main():
         input_ids = torch.load(INPUT_IDS_PATH)
         attention_mask = torch.load(ATTENTION_MASK_PATH)
     
-    day_features, labels, groups = get_day_features(days_df)
     ds, groups = create_dataset(
-        day_features,
+        days_df,
+        text_df,
         input_ids,
-        None,
-        attention_mask,
-        get_day_splits(days_df, text_df).tolist(),
-        labels,
-        groups,
-        text_df['group']
+        attention_mask
     )
-    print(ds[:])
-    return
     embedder = TextEmbedder('xlm-roberta-base')
     post_features = embedder.model.config.hidden_size + ds[0][0][1].shape[-1]
     aggregator = MeanAggregator(text_samples, post_features)
