@@ -138,3 +138,4 @@ config.yml
 token.txt
 LaBSE/models/tf_model.h5
 .vscode/
+wandb/

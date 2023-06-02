@@ -12,6 +12,7 @@ from torch.utils.data import Dataset, DataLoader, SequentialSampler
 from torch.nn.utils.rnn import pad_sequence
 import lightning as pl
 from lightning.pytorch import seed_everything
+from lightning.pytorch.tuner import Tuner
 import torchmetrics
 from transformers import AutoTokenizer
 
@@ -217,7 +218,11 @@ class CrisisDetector(pl.LightningModule):
         self.shift2.reset()
 
     def configure_optimizers(self) -> dict:
-        optimizer = torch.optim.Adam(self.parameters(), lr=self.lr, weight_decay=self.weight_decay)
+        optimizer = torch.optim.Adam([
+            {'params': self.embedder.parameters(), 'lr': 1e-5},
+            {'params': self.aggregator.parameters(), 'lr': 1e-3},
+            {'params': self.detector.parameters(), 'lr': 1e-3}
+        ], weight_decay=self.weight_decay)
         return {
             'optimizer': optimizer,
             'lr_scheduler': {
@@ -323,29 +328,34 @@ def train_test(
         groups: torch.Tensor, 
         batch_size: int = 1, 
         precision: str = 'bf16-mixed', 
+        max_epochs: int = -1,
         max_time: Any | None = None, 
         deterministic: bool = False
 ):
-    trainer = init_trainer(precision, early_stopping=False, max_time=max_time, deterministic=deterministic)
-    train_ds, test_ds = split_dataset(ds, groups, n_splits=10, validate=False)
+    trainer = init_trainer(precision, early_stopping=False, logging=True, max_epochs=max_epochs, max_time=max_time, deterministic=deterministic)
+    train_ds, test_ds, val_ds = split_dataset(ds, groups, n_splits=10, validate=True)
     train_dl = DataLoader(train_ds, batch_size, shuffle=True, num_workers=10, collate_fn=CombinedDataset.collate, pin_memory=True)
-    # val_dl = DataLoader(val_ds, batch_size, shuffle=False, num_workers=10, collate_fn=CombinedDataset.collate, pin_memory=True)
-    test_dl = DataLoader(test_ds, batch_sampler=TopicSampler(SequentialSampler(test_ds)), num_workers=10, collate_fn=CombinedDataset.collate, pin_memory=True)
-    trainer.fit(model, train_dl)
+    val_dl = DataLoader(val_ds, batch_size, shuffle=False, num_workers=10, collate_fn=CombinedDataset.collate, pin_memory=True)
+    test_dl = DataLoader(test_ds, batch_size, shuffle=False, num_workers=1, collate_fn=CombinedDataset.collate, pin_memory=True)
+    # optimal_lr = Tuner(trainer).lr_find(model, train_dl, val_dl)
+    # print(optimal_lr)
+    # model.lr = optimal_lr
+    trainer.fit(model, train_dl, val_dl)
     trainer.test(model, test_dl, 'best')
 
 def main():
     deterministic = True
     end_to_end = False
     text_samples = 50
+    embedder_name = 'sdadas/polish-distilroberta'
 
     if deterministic:
         seed_everything(42, workers=True)
     
     DAYS_DF_PATH = 'saved_objects/days_df.feather'
     POSTS_DF_PATH = 'saved_objects/posts_df' + str(text_samples) + '.feather'
-    INPUT_IDS_PATH = 'saved_objects/input_ids' + str(text_samples) + '.json'
-    ATTENTION_MASK_PATH = 'saved_objects/attention_mask' + str(text_samples) + '.json'
+    INPUT_IDS_PATH = 'saved_objects/input_ids' + str(text_samples) + '.pt'
+    ATTENTION_MASK_PATH = 'saved_objects/attention_mask' + str(text_samples) + '.pt'
 
     if end_to_end or not (os.path.isfile(DAYS_DF_PATH) and os.path.isfile(POSTS_DF_PATH)):
 
@@ -362,7 +372,7 @@ def main():
         text_df = pd.read_feather(POSTS_DF_PATH)
     
     if end_to_end or not (os.path.isfile(INPUT_IDS_PATH) and os.path.isfile(ATTENTION_MASK_PATH)):
-        input_ids, attention_mask = tokenize_dataset(text_df['text'].to_list(), batch_size=256)
+        input_ids, attention_mask = tokenize_dataset(text_df['text'].to_list(), tokenizer_name=embedder_name, batch_size=256)
 
         torch.save(input_ids, INPUT_IDS_PATH)
         torch.save(attention_mask, ATTENTION_MASK_PATH)
@@ -379,12 +389,12 @@ def main():
         input_ids,
         attention_mask
     )
-    embedder = TextEmbedder('xlm-roberta-base')
+    embedder = TextEmbedder(embedder_name)
     post_features = embedder.model.config.hidden_size + ds[0][0][1].shape[-1]
     aggregator = MeanAggregator(text_samples, post_features)
     detector = MyTransformer(input_dim=post_features + ds[0][0][0].shape[-1])
-    model = CrisisDetector(embedder, aggregator, detector, embedder_batch_size=16)
-    train_test(model, ds, groups, batch_size=1, max_time='00:00:20:00', deterministic=deterministic)
+    model = CrisisDetector(embedder, aggregator, detector, embedder_batch_size=32)
+    train_test(model, ds, groups, batch_size=8, max_epochs=2, deterministic=deterministic)
 
 if __name__ == '__main__':
     main()

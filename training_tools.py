@@ -7,6 +7,7 @@ import torch
 from torch.utils.data import Dataset, Subset, DataLoader
 import lightning as pl
 from lightning.pytorch.callbacks import ModelCheckpoint, EarlyStopping, StochasticWeightAveraging
+from lightning.pytorch.loggers import WandbLogger
 from sklearn.model_selection import GroupKFold, StratifiedGroupKFold
 
 def split_dataset(ds: Dataset, groups: torch.Tensor, n_splits: int = 10, validate: bool = True, stratify: bool = False
@@ -48,7 +49,7 @@ def fold_dataset(ds: Dataset, groups: torch.Tensor, n_splits: int = 10, validate
     else:
         return [(Subset(ds, train_idx), Subset(ds, test_idx)) for train_idx, test_idx in splits]
 
-def init_trainer(precision: str = 'bf16-mixed', early_stopping: bool = True, max_epochs: int = -1, max_time = None, verbose: bool = True, deterministic: bool = False
+def init_trainer(precision: str = 'bf16-mixed', early_stopping: bool = True, logging: bool = False, max_epochs: int = -1, max_time = None, verbose: bool = True, deterministic: bool = False
 ) -> pl.Trainer:
     checkpoint_callback = ModelCheckpoint(
         monitor='val_f1',
@@ -59,10 +60,13 @@ def init_trainer(precision: str = 'bf16-mixed', early_stopping: bool = True, max
         checkpoint_callback,
         EarlyStopping(monitor='val_f1', mode='max', patience=20)
     ] if early_stopping else []
+    logger = WandbLogger('crisis-detector') if logging else False
     # callbacks.append(StochasticWeightAveraging(swa_lrs=1e-2))
     trainer = pl.Trainer(
+        devices=1,
+        accelerator='gpu',
         precision=precision,
-        logger=False,
+        logger=logger,
         callbacks=callbacks,
         max_epochs=max_epochs,
         max_time=max_time,

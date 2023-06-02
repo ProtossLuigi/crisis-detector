@@ -81,11 +81,17 @@ def create_dataset(df: pd.DataFrame, sequence_len: int = 30) -> Tuple[TensorData
     groups_seq = torch.tensor(groups_seq)
 
     return TensorDataset(X_seq, y_seq), groups_seq
-    
+
+def error_if_multiprocess(x: torch.Tensor):
+    if len(x.shape[0]) == 1:
+        return x.squeeze(0)
+    else:
+        raise RuntimeError('Multiproccessing not supported.')
+
 class ShiftMetric(torchmetrics.Metric):
     is_differentiable = False
     higher_is_better = False
-    full_state_update = False
+    full_state_update = True
 
     def __init__(self, crisis_threshold: int = 5, absolute: bool = True, average: bool = False, **kwargs: Any) -> None:
         super().__init__(**kwargs)
@@ -93,10 +99,11 @@ class ShiftMetric(torchmetrics.Metric):
         self.absolute = absolute
         self.average = average
         self.add_state('shifts', default=[], dist_reduce_fx='cat')
+        self.add_state('tail', default=torch.empty((2, 0), dtype=torch.int, device=self.device), dist_reduce_fx=error_if_multiprocess)
     
-    def update(self, preds: torch.Tensor, target: torch.Tensor):
+    def _update(self, preds: torch.Tensor, target: torch.Tensor):
         preds, target = preds.long(), target.long()
-        diffs = (torch.diff(target, prepend=torch.tensor([0], dtype=target.dtype, device=target.device)) == 1).nonzero().squeeze(1)
+        diffs = (torch.diff(target, prepend=torch.tensor([0], dtype=target.dtype, device=target.device)) == 1).nonzero().flatten()
         assert diffs.shape[0] == 1
         crisis_start = diffs[0]
         pred_starts = (torch.diff(
@@ -113,7 +120,21 @@ class ShiftMetric(torchmetrics.Metric):
                 return
         raise RuntimeError('I broke Cauchy\'s theorem.')
     
-    def compute(self) -> torch.Tensor:
+    def update(self, preds: torch.Tensor, target: torch.Tensor):
+        tensors = torch.cat((self.tail, torch.stack((preds, target))), dim=1)
+        topic_starts = (torch.diff(tensors[1]) == -1).nonzero().flatten() + 1
+        if len(topic_starts) == 0:
+            self.tail = tensors.detach()
+            return
+        tensors = torch.tensor_split(tensors, topic_starts.tolist(), dim=1)
+        for t in tensors[:-1]:
+            self._update(t[0], t[1])
+        self.tail = tensors[-1].detach()
+    
+    def compute(self, count_last: bool = True) -> torch.Tensor:
+        if count_last:
+            self._update(self.tail[0], self.tail[1])
+            self.tail = torch.empty((2, 0), dtype=torch.int, device=self.device)
         shifts = torch.tensor(self.shifts, device=self.device)
         if self.average:
             return shifts.float().mean()
@@ -123,17 +144,18 @@ class ShiftMetric(torchmetrics.Metric):
 class Shift2Metric(torchmetrics.Metric):
     is_differentiable = False
     higher_is_better = False
-    full_state_update = False
+    full_state_update = True
 
     def __init__(self, crisis_threshold: int = 5, average: bool = False, **kwargs: Any) -> None:
         super().__init__(**kwargs)
         self.threshold = crisis_threshold
         self.average = average
         self.add_state('shifts', default=[], dist_reduce_fx='cat')
+        self.add_state('tail', default=torch.empty((2, 0), dtype=torch.int, device=self.device), dist_reduce_fx=error_if_multiprocess)
     
-    def update(self, preds: torch.Tensor, target: torch.Tensor):
+    def _update(self, preds: torch.Tensor, target: torch.Tensor):
         preds, target = preds.long(), target.long()
-        diffs = (torch.diff(target, prepend=torch.tensor([0], dtype=target.dtype, device=target.device)) == 1).nonzero().squeeze(1)
+        diffs = (torch.diff(target, prepend=torch.tensor([0], dtype=target.dtype, device=target.device)) == 1).nonzero().flatten()
         assert diffs.shape[0] == 1
         crisis_start = diffs[0]
         pred_starts = (torch.diff(
@@ -148,7 +170,21 @@ class Shift2Metric(torchmetrics.Metric):
                 return
         raise RuntimeError('I broke Cauchy\'s theorem.')
     
-    def compute(self) -> torch.Tensor:
+    def update(self, preds: torch.Tensor, target: torch.Tensor):
+        tensors = torch.cat((self.tail, torch.stack((preds, target))), dim=1)
+        topic_starts = (torch.diff(tensors[1]) == -1).nonzero().flatten() + 1
+        if len(topic_starts) == 0:
+            self.tail = tensors.detach()
+            return
+        tensors = torch.tensor_split(tensors, topic_starts.tolist(), dim=1)
+        for t in tensors[:-1]:
+            self._update(t[0], t[1])
+        self.tail = tensors[-1].detach()
+    
+    def compute(self, count_last: bool = True) -> torch.Tensor:
+        if count_last:
+            self._update(self.tail[0], self.tail[1])
+            self.tail = torch.empty((2, 0), dtype=torch.int, device=self.device)
         shifts = torch.tensor(self.shifts, device=self.device)
         if self.average:
             return shifts.float().mean()
