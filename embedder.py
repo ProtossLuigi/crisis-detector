@@ -33,9 +33,8 @@ class TextEmbedder(pl.LightningModule):
         self.model = AutoModel.from_pretrained(self.pretrained_name)
         self.classifier = nn.Sequential(
             nn.Dropout(.1),
-            nn.Linear(768, 384),
             nn.ReLU(),
-            nn.Linear(384, 2)
+            nn.Linear(768, 2)
         )
 
         self.save_hyperparameters()
@@ -159,7 +158,7 @@ def main():
     weight = None
 
     model = TextEmbedder(pretrained_name, weight)
-    trainer = train_model(model, train_ds, val_ds, batch_size=batch_size, max_epochs=10, deterministic=deterministic)
+    trainer = train_model(model, train_ds, val_ds, batch_size=batch_size, max_epochs=30, deterministic=deterministic)
     # model = TextEmbedder.load_from_checkpoint('checkpoints/epoch=0-step=1828.ckpt', pretrained_name=pretrained_name)
     test_model(train_ds, trainer=trainer, batch_size=batch_size)
     test_model(test_ds, trainer=trainer, batch_size=batch_size)
