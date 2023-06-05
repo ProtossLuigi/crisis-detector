@@ -90,7 +90,7 @@ def train_model(
     train_dl = DataLoader(train_ds, batch_size=batch_size, shuffle=True, num_workers=num_workers, pin_memory=True)
     val_dl = DataLoader(val_ds, batch_size=batch_size, shuffle=False, num_workers=num_workers, pin_memory=True) if val_ds else None
     
-    trainer = init_trainer(precision, val_ds is not None, max_epochs, max_time, verbose, deterministic)
+    trainer = init_trainer(precision, val_ds is not None, logging=True, max_epochs=max_epochs, max_time=max_time, verbose=verbose, deterministic=deterministic)
 
     trainer.fit(model, train_dl, val_dl)
     return trainer

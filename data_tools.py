@@ -215,11 +215,14 @@ def load_text_data(filenames: Iterable[str], crisis_dates: Iterable[pd.Timestamp
     assert len(filenames) == len(crisis_dates)
     dfs = []
     for i, (fname, date) in enumerate(tqdm(zip(filenames, crisis_dates), total=len(filenames))):
-        df = extract_text_data(fname, date, drop_invalid=drop_invalid)
-        if df is None:
-            continue
-        df['group'] = i
-        dfs.append(df)
+        try:
+            df = extract_text_data(fname, date, drop_invalid=drop_invalid)
+            if df is None:
+                continue
+            df['group'] = i
+            dfs.append(df)
+        except KeyError as e:
+            warn(f'Missing column {e.args[0]} in {fname}. Skipping...')
     return pd.concat(dfs, ignore_index=True)
 
 class DictDataset(Dataset):

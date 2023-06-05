@@ -8,7 +8,7 @@ from tqdm import tqdm
 import torch
 from torch import nn
 from torch.optim.lr_scheduler import ReduceLROnPlateau
-from torch.utils.data import Dataset, DataLoader, SequentialSampler
+from torch.utils.data import Dataset, DataLoader
 from torch.nn.utils.rnn import pad_sequence
 import lightning as pl
 from lightning.pytorch import seed_everything
@@ -19,8 +19,8 @@ from transformers import AutoTokenizer
 from data_tools import get_all_data, get_data_with_dates, load_data
 from training_tools import init_trainer, split_dataset, fold_dataset
 from embedder import TextEmbedder
-from aggregator import EmbeddingAggregator, MeanAggregator
-from crisis_detector import MyClassifier, ShiftMetric, Shift2Metric, MyTransformer, TopicSampler
+from aggregator import EmbeddingAggregator, MeanAggregator, TransformerAggregator
+from crisis_detector import MyClassifier, ShiftMetric, Shift2Metric, MyTransformer
 
 torch.set_float32_matmul_precision('high')
 
@@ -159,6 +159,7 @@ class CrisisDetector(pl.LightningModule):
         post_features = self.aggregator(post_features)
         post_features = post_features.view(day_features.shape[0], day_features.shape[1], post_features.shape[1])
         return self.detector(torch.cat((day_features, post_features), dim=-1))
+        # return self.detector(day_features)
     
     def training_step(self, batch, batch_idx):
         X, y = batch
@@ -219,8 +220,8 @@ class CrisisDetector(pl.LightningModule):
 
     def configure_optimizers(self) -> dict:
         optimizer = torch.optim.Adam([
-            {'params': self.embedder.parameters(), 'lr': 1e-5},
-            {'params': self.aggregator.parameters(), 'lr': 1e-3},
+            # {'params': self.embedder.parameters(), 'lr': 1e-5},
+            # {'params': self.aggregator.parameters(), 'lr': 1e-3},
             {'params': self.detector.parameters(), 'lr': 1e-3}
         ], weight_decay=self.weight_decay)
         return {
@@ -391,8 +392,9 @@ def main():
     )
     embedder = TextEmbedder(embedder_name)
     post_features = embedder.model.config.hidden_size + ds[0][0][1].shape[-1]
-    aggregator = MeanAggregator(text_samples, post_features)
+    aggregator = TransformerAggregator(sample_size=text_samples, embedding_dim=post_features)
     detector = MyTransformer(input_dim=post_features + ds[0][0][0].shape[-1])
+    # detector = MyTransformer(input_dim=ds[0][0][0].shape[-1])
     model = CrisisDetector(embedder, aggregator, detector, embedder_batch_size=32)
     train_test(model, ds, groups, batch_size=8, max_epochs=2, deterministic=deterministic)
 

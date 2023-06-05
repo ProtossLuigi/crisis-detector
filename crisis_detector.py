@@ -564,6 +564,7 @@ def main():
     deterministic = True
     end_to_end = False
     text_samples = 50
+    embedder_name = 'sdadas/polish-distilroberta'
 
     if deterministic:
         seed_everything(42, workers=True)
@@ -587,13 +588,13 @@ def main():
         text_df = pd.read_feather(POSTS_DF_PATH)
 
     if end_to_end or not os.path.isfile(EMBEDDINGS_PATH):
-        tokenizer = AutoTokenizer.from_pretrained('xlm-roberta-base')
+        tokenizer = AutoTokenizer.from_pretrained(embedder_name)
         ds = SeriesDataset(text_df['text'])
         collate_fn = lambda x: tokenizer(x, truncation=True, padding=True, max_length=256, return_tensors='pt')
         dl = DataLoader(ds, 64, num_workers=10, collate_fn=collate_fn, pin_memory=True)
-        model = TextEmbedder.load_from_checkpoint('saved_objects/finetuned-xlm-roberta-base.ckpt')
-        # model = TextEmbedder('sdadas/polish-distilroberta')
-        trainer = pl.Trainer(precision='bf16-mixed', logger=False, deterministic=deterministic)
+        # model = TextEmbedder.load_from_checkpoint('saved_objects/finetuned-xlm-roberta-base.ckpt')
+        model = TextEmbedder(embedder_name)
+        trainer = pl.Trainer(devices=1, precision='bf16-mixed', logger=False, deterministic=deterministic)
         embeddings = trainer.predict(model, dl)
         embeddings = torch.cat(embeddings, dim=0)
 
@@ -611,8 +612,8 @@ def main():
     # features_df = pd.merge(text_df[['name', 'id']], pd.read_feather('saved_objects/full_text_df.feather'), how='inner', left_on=['name', 'id'], right_on=['topic', 'id'])
     # embeddings = torch.cat((embeddings, torch.tensor(np.stack(features_df['emotions']))), dim=-1)
 
-    post_features = torch.tensor(pd.get_dummies(text_df['Typ medium']).values, dtype=torch.float32)
-    embeddings = torch.cat((embeddings, post_features), dim=-1)
+    # post_features = torch.tensor(pd.get_dummies(text_df['Typ medium']).values, dtype=torch.float32)
+    # embeddings = torch.cat((embeddings, post_features), dim=-1)
 
     aggregator = MeanAggregator(embedding_dim=embeddings.shape[1])
     days_df = add_embeddings(days_df, text_df, embeddings, aggregator)
@@ -621,13 +622,13 @@ def main():
     if deterministic:
         seed_everything(42, workers=True)
 
-    # train_ds, test_ds, val_ds = split_dataset(ds, groups)
-    # model = MyTransformer(print_test_samples=True)
-    # trainer = train_model(model, train_ds, val_ds, precision='bf16-mixed', deterministic=deterministic)
-    # test_dl = DataLoader(test_ds, batch_sampler=TopicSampler(test_ds), num_workers=10, pin_memory=True)
-    # trainer.test(dataloaders=test_dl, ckpt_path='best', verbose=True)
+    train_ds, test_ds, val_ds = split_dataset(ds, groups)
+    model = MyTransformer(print_test_samples=True)
+    trainer = train_model(model, train_ds, val_ds, precision='bf16-mixed', max_epochs=-1, deterministic=deterministic)
+    test_dl = DataLoader(test_ds, batch_size=512, num_workers=1, pin_memory=True)
+    trainer.test(dataloaders=test_dl, ckpt_path='best', verbose=True)
 
-    stats = cross_validate(MyTransformer(input_dim=ds[0][0].shape[-1]), ds, groups, n_splits=5, precision='bf16-mixed', deterministic=deterministic)
+    # stats = cross_validate(MyTransformer(input_dim=ds[0][0].shape[-1]), ds, groups, n_splits=5, precision='bf16-mixed', deterministic=deterministic)
     # df.to_feather('saved_objects/predictions.feather')
 
 if __name__ == '__main__':

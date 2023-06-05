@@ -9,7 +9,7 @@ from torch.optim.lr_scheduler import ReduceLROnPlateau
 import lightning as pl
 from lightning.pytorch import seed_everything
 import torchmetrics
-from transformers import AutoModelForSequenceClassification, AutoConfig, AutoTokenizer
+from transformers import AutoModel, AutoConfig, AutoTokenizer
 
 from data_tools import load_data, DictDataset, load_text_data, get_verified_data, get_data_with_dates
 from training_tools import train_model, test_model, cross_validate, split_dataset
@@ -27,10 +27,16 @@ class TextEmbedder(pl.LightningModule):
         self.prec = torchmetrics.Precision('multiclass', num_classes=2, average='macro')
         self.rec = torchmetrics.Recall('multiclass', num_classes=2, average='macro')
 
-        config = AutoConfig.from_pretrained(self.pretrained_name)
-        config.num_labels = 2
-        config.output_hidden_states = True
-        self.model = AutoModelForSequenceClassification.from_pretrained(self.pretrained_name, config=config)
+        # config = AutoConfig.from_pretrained(self.pretrained_name)
+        # config.num_labels = 2
+        # config.output_hidden_states = True
+        self.model = AutoModel.from_pretrained(self.pretrained_name)
+        self.classifier = nn.Sequential(
+            nn.Dropout(.1),
+            nn.Linear(768, 384),
+            nn.ReLU(),
+            nn.Linear(384, 2)
+        )
 
         self.save_hyperparameters()
     
@@ -39,11 +45,12 @@ class TextEmbedder(pl.LightningModule):
             x = args[0]
         else:
             x = kwargs
-        return self.model(input_ids=x['input_ids'], attention_mask=x['attention_mask'])
+        return self.model(input_ids=x['input_ids'], attention_mask=x['attention_mask'], return_dict=False)
     
     def training_step(self, batch, batch_idx):
         y = batch['label']
-        y_pred = self(batch).logits
+        embeddings = self(batch)[0][:, 0]
+        y_pred = self.classifier(embeddings)
         loss = self.loss_fn(y_pred, y)
         self.log('train_loss', loss, on_epoch=True)
         return loss
@@ -51,7 +58,8 @@ class TextEmbedder(pl.LightningModule):
     @torch.no_grad()
     def validation_step(self, batch, batch_idx):
         y_true = batch['label']
-        y_pred = self(batch).logits
+        embeddings = self(batch)[0][:, 0]
+        y_pred = self.classifier(embeddings)
         acc = self.acc(torch.argmax(y_pred, -1), y_true)
         f1 = self.f1(torch.argmax(y_pred, -1), y_true)
         loss = self.loss_fn(y_pred, y_true)
@@ -63,7 +71,8 @@ class TextEmbedder(pl.LightningModule):
     @torch.no_grad()
     def test_step(self, batch, batch_idx):
         y_true = batch['label']
-        y_pred = self(batch).logits
+        embeddings = self(batch)[0][:, 0]
+        y_pred = self.classifier(embeddings)
         acc = self.acc(torch.argmax(y_pred, -1), y_true)
         score = self.f1(torch.argmax(y_pred, -1), y_true)
         loss = self.loss_fn(y_pred, y_true)
@@ -114,7 +123,7 @@ def create_token_dataset(df: pd.DataFrame, tokenizer_name: str, batch_size: int 
 def main():
     TEXTS_PATH = 'saved_objects/texts_df.feather'
     DATASET_PATH = 'saved_objects/token_ds.pt'
-    pretrained_name = 'xlm-roberta-base'
+    pretrained_name = 'allegro/herbert-base-cased'
 
     deterministic = True
     end_to_end = False
