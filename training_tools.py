@@ -58,7 +58,7 @@ def init_trainer(precision: str = 'bf16-mixed', early_stopping: bool = True, log
     )
     callbacks = [
         checkpoint_callback,
-        EarlyStopping(monitor='val_f1', mode='max', patience=20)
+        EarlyStopping(monitor='val_f1', mode='max', patience=10)
     ] if early_stopping else []
     logger = WandbLogger('crisis-detector') if logging else False
     # callbacks.append(StochasticWeightAveraging(swa_lrs=1e-2))
@@ -90,6 +90,7 @@ def train_model(
     train_dl = DataLoader(train_ds, batch_size=batch_size, shuffle=True, num_workers=num_workers, pin_memory=True)
     val_dl = DataLoader(val_ds, batch_size=batch_size, shuffle=False, num_workers=num_workers, pin_memory=True) if val_ds else None
     
+    model.train_dataloader_len = len(train_dl)
     trainer = init_trainer(precision, val_ds is not None, logging=True, max_epochs=max_epochs, max_time=max_time, verbose=verbose, deterministic=deterministic)
 
     trainer.fit(model, train_dl, val_dl)
