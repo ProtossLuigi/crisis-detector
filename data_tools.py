@@ -178,6 +178,7 @@ def extract_text_data(
         filename: str,
         crisis_start: pd.Timestamp,
         window_size: int | Tuple[int, int] = 30,
+        samples_limit: int | None = None,
         drop_invalid: bool = False
 ) -> pd.DataFrame | None:
     src_df = pd.read_excel(filename)
@@ -207,16 +208,18 @@ def extract_text_data(
     text = src_df.apply(lambda x: " . ".join([str(x['Tytuł publikacji']), str(x['Lead']), str(x['Kontekst publikacji'])]), axis=1)
     text_df = pd.DataFrame({'text': text, 'label': labels})
     sample_size = text_df['label'].value_counts().min()
+    if samples_limit is not None:
+        sample_size = min(sample_size, samples_limit // 2)
     text_df = pd.concat((text_df[text_df['label']].sample(sample_size), text_df[~text_df['label']].sample(sample_size))).sort_index().reset_index(drop=True)
     
     return text_df
 
-def load_text_data(filenames: Iterable[str], crisis_dates: Iterable[pd.Timestamp], drop_invalid: bool = False) -> pd.DataFrame:
+def load_text_data(filenames: Iterable[str], crisis_dates: Iterable[pd.Timestamp], samples_limit: int | None = None, drop_invalid: bool = False) -> pd.DataFrame:
     assert len(filenames) == len(crisis_dates)
     dfs = []
     for i, (fname, date) in enumerate(tqdm(zip(filenames, crisis_dates), total=len(filenames))):
         try:
-            df = extract_text_data(fname, date, drop_invalid=drop_invalid)
+            df = extract_text_data(fname, date, samples_limit=samples_limit, drop_invalid=drop_invalid)
             if df is None:
                 continue
             df['group'] = i

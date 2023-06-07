@@ -65,7 +65,7 @@ class TextEmbedder(pl.LightningModule):
         acc = self.acc(torch.argmax(y_pred, -1), y_true)
         f1 = self.f1(torch.argmax(y_pred, -1), y_true)
         self.log('train_loss', loss, on_epoch=True)
-        self.log('val_acc', acc, on_epoch=True)
+        self.log('train_acc', acc, on_epoch=True)
         self.log('train_f1', f1, on_epoch=True)
         return loss
     
@@ -146,21 +146,22 @@ def create_token_dataset(df: pd.DataFrame, tokenizer_name: str, batch_size: int 
     return ds
 
 def main():
-    TEXTS_PATH = 'saved_objects/texts_df.feather'
-    DATASET_PATH = 'saved_objects/token_ds.pt'
-    pretrained_name = 'allegro/herbert-base-cased'
-    max_epochs = 30
-
     deterministic = True
     end_to_end = False
+    samples_limit = 1000
     batch_size = 128
+    max_epochs = 50
+    
+    TEXTS_PATH = 'saved_objects/texts_df' + str(samples_limit) + '.feather'
+    DATASET_PATH = 'saved_objects/token_ds' + str(samples_limit) + '.pt'
+    pretrained_name = 'allegro/herbert-base-cased'
 
     if deterministic:
         seed_everything(42)
 
     if end_to_end or not os.path.isfile(TEXTS_PATH):
         dates = get_data_with_dates(get_verified_data())
-        posts_df = load_text_data(dates['path'], dates['crisis_start'], drop_invalid=True)
+        posts_df = load_text_data(dates['path'], dates['crisis_start'], samples_limit=samples_limit, drop_invalid=True)
         posts_df.to_feather(TEXTS_PATH)
 
         if deterministic:
