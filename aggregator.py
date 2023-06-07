@@ -15,7 +15,7 @@ import lightning as pl
 from lightning.pytorch import seed_everything
 from lightning.pytorch.utilities.types import STEP_OUTPUT
 import torchmetrics
-from transformers import AutoTokenizer
+from transformers import AutoTokenizer, get_linear_schedule_with_warmup
 
 from data_tools import get_data_with_dates, get_verified_data, SeriesDataset, SimpleDataset
 from training_tools import split_dataset, fold_dataset, train_model
@@ -28,6 +28,9 @@ class EmbeddingAggregator(pl.LightningModule):
             embedding_dim: int = 768,
             lr: float = 1e-3,
             weight_decay: float = 0.01,
+            train_dataloader_len: int | None = None, 
+            warmup_proportion: float = .1, 
+            max_epochs: int | None = None,
             class_ratios: torch.Tensor | None = None,
             *args: Any,
             **kwargs: Any
@@ -38,7 +41,11 @@ class EmbeddingAggregator(pl.LightningModule):
         self.embedding_dim = embedding_dim
         self.lr = lr
         self.weight_decay = weight_decay
-        self.class_weights = .5 / class_ratios if class_ratios is not None else None
+        self.train_dataloader_len = train_dataloader_len
+        self.warmup_proportion = warmup_proportion
+        self.max_epochs = max_epochs
+        
+        self.init_loss_fn(class_ratios)
 
         self.loss_fn = nn.CrossEntropyLoss(self.class_weights)
         self.f1 = torchmetrics.F1Score('multiclass', num_classes=2, average=None)
@@ -54,6 +61,10 @@ class EmbeddingAggregator(pl.LightningModule):
             nn.Linear(384, 2),
             nn.Softmax(dim=-1)
         )
+    
+    def init_loss_fn(self, class_ratios: torch.Tensor | None = None) -> None:
+        self.class_weights = .5 / class_ratios if class_ratios is not None else None
+        self.loss_fn = nn.CrossEntropyLoss(self.class_weights)
     
     def forward(self, x) -> Any:
         raise NotImplementedError()
@@ -71,13 +82,13 @@ class EmbeddingAggregator(pl.LightningModule):
         y_pred = self.classifier(self(X))
         self.acc.update(torch.argmax(y_pred, -1), y)
         self.f1.update(torch.argmax(y_pred, -1), y)
-        self.log('val_loss', self.loss_fn(y_pred, y).item(), on_epoch=True)
+        self.log('val_loss', self.loss_fn(y_pred, y), on_epoch=True)
     
     @torch.no_grad()
     def on_validation_epoch_end(self) -> None:
         metrics = {
-            'val_acc': self.acc.compute().item(),
-            'val_f1': self.f1.compute().mean().item()
+            'val_acc_macro': self.acc.compute(),
+            'val_f1_macro': self.f1.compute().mean()
         }
         self.log_dict(metrics)
         self.acc.reset()
@@ -91,36 +102,41 @@ class EmbeddingAggregator(pl.LightningModule):
         self.f1.update(torch.argmax(y_pred, -1), y)
         self.prec.update(torch.argmax(y_pred, -1), y)
         self.rec.update(torch.argmax(y_pred, -1), y)
-        self.log('test_loss', self.loss_fn(y_pred, y).item(), on_epoch=True)
+        self.log('test_loss', self.loss_fn(y_pred, y), on_epoch=True)
     
     @torch.no_grad()
     def on_test_epoch_end(self) -> None:
         metrics = {
-            'test_acc': self.acc.compute().item()
+            'test_acc': self.acc.compute()
         }
         f1 = self.f1.compute()
-        metrics['test_f1_neg'], metrics['test_f1_pos'] = f1[0].item(), f1[1].item()
+        metrics['test_f1_0'], metrics['test_f1_1'] = f1[0], f1[1]
         prec = self.prec.compute()
-        metrics['test_precision_neg'], metrics['test_precision_pos'] = prec[0].item(), prec[1].item()
+        metrics['test_precision_0'], metrics['test_precision_1'] = prec[0], prec[1]
         rec = self.rec.compute()
-        metrics['test_recall_neg'], metrics['test_recall_pos'] = rec[0].item(), rec[1].item()
+        metrics['test_recall_0'], metrics['test_recall_1'] = rec[0], rec[1]
         self.log_dict(metrics)
         self.acc.reset()
         self.f1.reset()
         self.prec.reset()
         self.rec.reset()
     
-    def configure_optimizers(self) -> Any:
+    def configure_optimizers(self):
         optimizer = torch.optim.Adam(self.parameters(), lr=self.lr, weight_decay=self.weight_decay)
-        return {
-            'optimizer': optimizer,
-            'lr_scheduler': {
-                'scheduler': ReduceLROnPlateau(optimizer, 'min', .5, 10),
-                'monitor': 'val_loss',
-                'interval': 'epoch',
-                'frequency': 1
+        if self.warmup_proportion is not None and self.train_dataloader_len is not None:
+            num_training_steps = self.max_epochs * self.train_dataloader_len
+            num_warmup_steps = int(self.warmup_proportion * num_training_steps)
+            scheduler = get_linear_schedule_with_warmup(optimizer, num_warmup_steps, num_training_steps)
+            return {
+                'optimizer': optimizer,
+                'lr_scheduler': {
+                    'scheduler': scheduler,
+                    'interval': 'step',
+                    'frequency': 50
+                }
             }
-        }
+        else:
+            return optimizer
 
 class MeanAggregator(EmbeddingAggregator):
     def __init__(self, *args, **kwargs) -> None:
@@ -266,8 +282,7 @@ def create_dataset(df: pd.DataFrame, embeddings: torch.Tensor, threshold: float 
     return SimpleDataset(embeddings, labels), groups
 
 def cross_validate(
-        model_class: type,
-        model_params: dict,
+        model: EmbeddingAggregator,
         ds: Dataset,
         groups: torch.Tensor,
         use_weights: bool = False,
@@ -281,11 +296,12 @@ def cross_validate(
 ) -> pd.DataFrame:
     folds = fold_dataset(ds, groups, n_splits)
     stats = []
+    init_state_dict = model.state_dict()
     for train_ds, test_ds, val_ds in tqdm(folds):
+        model.load_state_dict(init_state_dict)
         if use_weights:
             class_ratio = train_ds[:][1].unique(return_counts=True)[1] / len(train_ds)
-            model_params['class_ratios'] = class_ratio
-        model = model_class(**model_params)
+            model.init_loss_fn(class_ratio)
 
         trainer = train_model(model, train_ds, val_ds, precision, batch_size, max_epochs, max_time, num_workers, False, deterministic)
 
@@ -304,7 +320,7 @@ def main():
     deterministic = True
     end_to_end = False
     sample_size = 50
-    batch_size = 512
+    batch_size = 1024
     padding = False
     
     TEXTS_PATH = 'saved_objects/texts_no_sample_df.feather'
@@ -325,13 +341,13 @@ def main():
         posts_df = pd.read_feather(TEXTS_PATH)
     
     if end_to_end or not os.path.isfile(EMBEDDINGS_PATH):
-        tokenizer = AutoTokenizer.from_pretrained('xlm-roberta-base')
+        embedder = TextEmbedder.load_from_checkpoint('saved_objects/finetuned_embedder.ckpt')
+        tokenizer = AutoTokenizer.from_pretrained(embedder.pretrained_name)
         ds = SeriesDataset(posts_df['text'])
         collate_fn = lambda x: tokenizer(x, truncation=True, padding=True, max_length=256, return_tensors='pt')
-        dl = DataLoader(ds, 64, num_workers=10, collate_fn=collate_fn, pin_memory=True)
-        model = TextEmbedder.load_from_checkpoint('saved_objects/finetuned-xlm-roberta-base.ckpt')
+        dl = DataLoader(ds, 128, num_workers=10, collate_fn=collate_fn, pin_memory=True)
         trainer = pl.Trainer(precision='bf16-mixed', logger=False, deterministic=deterministic)
-        embeddings = trainer.predict(model, dl)
+        embeddings = trainer.predict(embedder, dl)
         embeddings = torch.cat(embeddings, dim=0)
 
         with open(EMBEDDINGS_PATH, 'wb') as f:
@@ -346,7 +362,7 @@ def main():
     ds, groups = create_dataset(posts_df, embeddings, 0., sample_size, batch_size > 0, padding)
     # print(sum(ds[:][1]) / len(ds))
     
-    cross_validate(TransformerAggregator, {'sample_size': sample_size}, ds, groups, True, 5, batch_size=batch_size, num_workers=10, deterministic=deterministic)
+    cross_validate(MeanAggregator, {'sample_size': sample_size}, ds, groups, True, 5, batch_size=batch_size, num_workers=10, deterministic=deterministic)
 
 if __name__ == '__main__':
     main()
