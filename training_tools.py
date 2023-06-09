@@ -49,19 +49,21 @@ def fold_dataset(ds: Dataset, groups: torch.Tensor, n_splits: int = 10, validate
     else:
         return [(Subset(ds, train_idx), Subset(ds, test_idx)) for train_idx, test_idx in splits]
 
-def init_trainer(precision: str = 'bf16-mixed', early_stopping: bool = True, logging: bool = False, max_epochs: int = -1, max_time = None, verbose: bool = True, deterministic: bool = False
+def init_trainer(precision: str = 'bf16-mixed', early_stopping: bool = True, logging: dict | None = None, max_epochs: int = -1, max_time = None, verbose: bool = True, deterministic: bool = False
 ) -> pl.Trainer:
     checkpoint_callback = ModelCheckpoint(
-        monitor='val_f1',
+        monitor='val_f1_macro',
         mode='max',
         save_top_k=1
     )
     callbacks = [
         checkpoint_callback,
-        EarlyStopping(monitor='val_f1', mode='max', patience=10)
+        EarlyStopping(monitor='val_f1_macro', mode='max', patience=10)
     ] if early_stopping else []
-    logger = WandbLogger('crisis-detector') if logging else False
-    # callbacks.append(StochasticWeightAveraging(swa_lrs=1e-2))
+    if logging is None:
+        logger = False
+    else:
+        logger = WandbLogger(name=logging.get('name', None), project=logging.get('project', None))
     trainer = pl.Trainer(
         devices=1,
         accelerator='gpu',

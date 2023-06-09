@@ -18,7 +18,7 @@ import torchmetrics
 from transformers import AutoTokenizer, get_linear_schedule_with_warmup
 
 from data_tools import get_data_with_dates, get_verified_data, SeriesDataset, SimpleDataset
-from training_tools import split_dataset, fold_dataset, train_model
+from training_tools import init_trainer, split_dataset, fold_dataset, train_model
 from embedder import TextEmbedder
 
 class EmbeddingAggregator(pl.LightningModule):
@@ -55,11 +55,8 @@ class EmbeddingAggregator(pl.LightningModule):
         
         self.classifier = nn.Sequential(
             nn.Dropout(.1),
-            nn.Linear(self.embedding_dim, 384),
-            nn.Dropout(.1),
             nn.Tanh(),
-            nn.Linear(384, 2),
-            nn.Softmax(dim=-1)
+            nn.Linear(self.embedding_dim, 2)
         )
     
     def init_loss_fn(self, class_ratios: torch.Tensor | None = None) -> None:
@@ -110,7 +107,7 @@ class EmbeddingAggregator(pl.LightningModule):
             'test_acc': self.acc.compute()
         }
         f1 = self.f1.compute()
-        metrics['test_f1_0'], metrics['test_f1_1'] = f1[0], f1[1]
+        metrics['test_f1_0'], metrics['test_f1_1'], metrics['test_f1_macro'] = f1[0], f1[1], f1.mean(dim=0)
         prec = self.prec.compute()
         metrics['test_precision_0'], metrics['test_precision_1'] = prec[0], prec[1]
         rec = self.rec.compute()
@@ -131,8 +128,8 @@ class EmbeddingAggregator(pl.LightningModule):
                 'optimizer': optimizer,
                 'lr_scheduler': {
                     'scheduler': scheduler,
-                    'interval': 'step',
-                    'frequency': 50
+                    'interval': 'epoch',
+                    'frequency': 1
                 }
             }
         else:
@@ -265,7 +262,7 @@ def load_data(filenames: Iterable[str], crisis_dates: Iterable[pd.Timestamp], dr
         dfs.append(df)
     return pd.concat(dfs, ignore_index=True)
 
-def create_dataset(df: pd.DataFrame, embeddings: torch.Tensor, threshold: float = 0., max_samples: int = 0, batched: bool = True, padding: bool = False):
+def create_dataset(df: pd.DataFrame, embeddings: torch.Tensor, threshold: float = 0., max_samples: int = 0, batched: bool = True, padding: bool = False, permutations: int = 1):
     assert (batched and max_samples) or not padding
     labels = torch.tensor((df[['group', 'date', 'label']].groupby(['group', 'date']).mean()['label'] > threshold).to_list(), dtype=torch.long)
     groups = torch.tensor(df[['group', 'date']].drop_duplicates()['group'].to_list())
@@ -274,12 +271,33 @@ def create_dataset(df: pd.DataFrame, embeddings: torch.Tensor, threshold: float 
     for i in range(len(embeddings)):
         sample_size = min(embeddings[i].shape[0], max_samples) if max_samples else embeddings[i].shape[0]
         embeddings[i] = embeddings[i][torch.randperm(embeddings[i].shape[0])[:sample_size]]
+        
     if batched:
         embeddings = pad_sequence(embeddings, batch_first=True)
         if padding:
             embeddings = nn.functional.pad(embeddings, (0, 0, 0, max_samples - embeddings.shape[1]))
         return TensorDataset(embeddings, labels), groups
     return SimpleDataset(embeddings, labels), groups
+
+def train_test(
+        model: EmbeddingAggregator, 
+        ds: Dataset, 
+        groups: torch.Tensor, 
+        batch_size: int = 1, 
+        precision: str = 'bf16-mixed', 
+        max_epochs: int = -1,
+        max_time: Any | None = None, 
+        deterministic: bool = False
+):
+    trainer = init_trainer(precision, early_stopping=True, logging={'name': 'aggregator', 'project': 'crisis-detector'}, max_epochs=max_epochs, max_time=max_time, deterministic=deterministic)
+    train_ds, test_ds, val_ds = split_dataset(ds, groups, n_splits=10, validate=True)
+    train_dl = DataLoader(train_ds, batch_size, shuffle=True, num_workers=10, pin_memory=True)
+    val_dl = DataLoader(val_ds, batch_size, shuffle=False, num_workers=10, pin_memory=True)
+    test_dl = DataLoader(test_ds, batch_size, shuffle=False, num_workers=10, pin_memory=True)
+    model.train_dataloader_len = len(train_dl)
+    model.max_epochs = max_epochs
+    trainer.fit(model, train_dl, val_dl) 
+    trainer.test(model, test_dl, 'best')
 
 def cross_validate(
         model: EmbeddingAggregator,
@@ -320,7 +338,7 @@ def main():
     deterministic = True
     end_to_end = False
     sample_size = 50
-    batch_size = 1024
+    batch_size = 512
     padding = False
     
     TEXTS_PATH = 'saved_objects/texts_no_sample_df.feather'
@@ -360,9 +378,10 @@ def main():
             embeddings = torch.load(f)
     
     ds, groups = create_dataset(posts_df, embeddings, 0., sample_size, batch_size > 0, padding)
-    # print(sum(ds[:][1]) / len(ds))
+    model = TransformerAggregator(sample_size=sample_size)
+    train_test(model, ds, groups, batch_size=batch_size, max_epochs=100, deterministic=deterministic)
     
-    cross_validate(MeanAggregator, {'sample_size': sample_size}, ds, groups, True, 5, batch_size=batch_size, num_workers=10, deterministic=deterministic)
+    # cross_validate(MeanAggregator, {'sample_size': sample_size}, ds, groups, True, 5, batch_size=batch_size, num_workers=10, deterministic=deterministic)
 
 if __name__ == '__main__':
     main()
