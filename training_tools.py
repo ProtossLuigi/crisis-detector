@@ -52,13 +52,13 @@ def fold_dataset(ds: Dataset, groups: torch.Tensor, n_splits: int = 10, validate
 def init_trainer(precision: str = 'bf16-mixed', early_stopping: bool = True, logging: dict | None = None, max_epochs: int = -1, max_time = None, verbose: bool = True, deterministic: bool = False
 ) -> pl.Trainer:
     checkpoint_callback = ModelCheckpoint(
-        monitor='val_f1_macro',
-        mode='max',
+        monitor='val_loss',
+        mode='min',
         save_top_k=1
     )
     callbacks = [
         checkpoint_callback,
-        EarlyStopping(monitor='val_f1_macro', mode='max', patience=10)
+        EarlyStopping(monitor='val_loss', mode='min', patience=10)
     ] if early_stopping else []
     if logging is None:
         logger = False

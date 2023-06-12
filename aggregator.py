@@ -3,6 +3,7 @@ from typing import Any, Optional, Tuple, Iterable
 import os
 import numpy as np
 import pandas as pd
+from random import sample
 from warnings import warn
 from tqdm import tqdm
 
@@ -118,6 +119,12 @@ class EmbeddingAggregator(pl.LightningModule):
         self.prec.reset()
         self.rec.reset()
     
+    @torch.no_grad()
+    def predict_step(self, batch: Any, batch_idx: int, dataloader_idx: int = 0) -> Any:
+        if type(batch) == list:
+            batch = torch.cat(batch)
+        return self(batch)
+    
     def configure_optimizers(self):
         optimizer = torch.optim.Adam(self.parameters(), lr=self.lr, weight_decay=self.weight_decay)
         if self.warmup_proportion is not None and self.train_dataloader_len is not None:
@@ -197,7 +204,7 @@ class PositionalEncoding(nn.Module):
         return x
 
 class TransformerAggregator(EmbeddingAggregator):
-    def __init__(self, n_heads: int = 8, transformer_layers: int = 6, *args, **kwargs) -> None:
+    def __init__(self, n_heads: int = 8, transformer_layers: int = 2, *args, **kwargs) -> None:
         super().__init__(*args, **kwargs)
         self.n_heads = n_heads
         self.transformer_layers = transformer_layers
@@ -207,6 +214,8 @@ class TransformerAggregator(EmbeddingAggregator):
             nn.TransformerEncoderLayer(self.embedding_dim, self.n_heads, activation=nn.functional.leaky_relu, batch_first=True),
             self.transformer_layers
         )
+
+        self.save_hyperparameters()
     
     def forward(self, x: torch.Tensor):
         # x = self.positional_encoding(x)
@@ -262,7 +271,7 @@ def load_data(filenames: Iterable[str], crisis_dates: Iterable[pd.Timestamp], dr
         dfs.append(df)
     return pd.concat(dfs, ignore_index=True)
 
-def create_dataset(df: pd.DataFrame, embeddings: torch.Tensor, threshold: float = 0., max_samples: int = 0, batched: bool = True, padding: bool = False, permutations: int = 1):
+def create_dataset(df: pd.DataFrame, embeddings: torch.Tensor, threshold: float = 0., max_samples: int = 0, batched: bool = True, padding: bool = False, balance_classes: bool = False):
     assert (batched and max_samples) or not padding
     labels = torch.tensor((df[['group', 'date', 'label']].groupby(['group', 'date']).mean()['label'] > threshold).to_list(), dtype=torch.long)
     groups = torch.tensor(df[['group', 'date']].drop_duplicates()['group'].to_list())
@@ -271,7 +280,21 @@ def create_dataset(df: pd.DataFrame, embeddings: torch.Tensor, threshold: float 
     for i in range(len(embeddings)):
         sample_size = min(embeddings[i].shape[0], max_samples) if max_samples else embeddings[i].shape[0]
         embeddings[i] = embeddings[i][torch.randperm(embeddings[i].shape[0])[:sample_size]]
-        
+    if balance_classes:
+        sample_selector = torch.zeros_like(labels, dtype=bool)
+        for g in groups.unique():
+            selector = groups == g
+            counts = labels[selector].unique(return_counts=True)[1]
+            if len(counts) < 2:
+                continue
+            num_samples = counts.min()
+            indices_0 = selector.nonzero().flatten()[labels[selector] == 0][sample(range(sum(labels[selector] == 0)), num_samples)]
+            indices_1 = selector.nonzero().flatten()[labels[selector] == 1][sample(range(sum(labels[selector] == 1)), num_samples)]
+            sample_selector[indices_0] = True
+            sample_selector[indices_1] = True
+        labels = labels[sample_selector]
+        groups = groups[sample_selector]
+        embeddings = [embeddings[i] for i in range(len(sample_selector)) if sample_selector[i]]
     if batched:
         embeddings = pad_sequence(embeddings, batch_first=True)
         if padding:
@@ -377,7 +400,7 @@ def main():
         with open(EMBEDDINGS_PATH, 'rb') as f:
             embeddings = torch.load(f)
     
-    ds, groups = create_dataset(posts_df, embeddings, 0., sample_size, batch_size > 0, padding)
+    ds, groups = create_dataset(posts_df, embeddings, 0., sample_size, batch_size > 0, padding, balance_classes=True)
     model = TransformerAggregator(sample_size=sample_size)
     train_test(model, ds, groups, batch_size=batch_size, max_epochs=100, deterministic=deterministic)
     

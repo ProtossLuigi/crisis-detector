@@ -10,33 +10,38 @@ from tqdm import tqdm
 import torch
 from torch import nn
 from torch.utils.data import Dataset, DataLoader, TensorDataset, SequentialSampler, BatchSampler
-from torch.optim.lr_scheduler import ReduceLROnPlateau
 from torch.nn.utils.rnn import pad_sequence
 import torchmetrics
 import lightning as pl
 from lightning.pytorch import seed_everything
-from transformers import AutoTokenizer
+from transformers import AutoTokenizer, get_linear_schedule_with_warmup
 from sklearn.preprocessing import StandardScaler
 
 from embedder import TextEmbedder
-from data_tools import load_data, SeriesDataset, get_all_data, get_data_with_dates, get_full_text_data
+from data_tools import load_data, SimpleDataset, SeriesDataset, get_all_data, get_data_with_dates, get_full_text_data
 from training_tools import split_dataset, train_model, test_model, fold_dataset, init_trainer
-from aggregator import EmbeddingAggregator, MeanAggregator
+from aggregator import EmbeddingAggregator, TransformerAggregator
 
 torch.set_float32_matmul_precision('high')
 
 def add_embeddings(
-        days_df: pd.DataFrame, text_df: pd.DataFrame, embeddings: List[torch.Tensor] | torch.Tensor, aggregator: EmbeddingAggregator
+        days_df: pd.DataFrame, text_df: pd.DataFrame, embeddings: List[torch.Tensor] | torch.Tensor, aggregator: EmbeddingAggregator, batch_size: int = 1, deterministic: bool = False
 ) -> pd.DataFrame:
     if type(embeddings) == list:
         embeddings = torch.cat(embeddings, dim=0)
     embedding_len = embeddings.shape[1]
     sections = np.cumsum(text_df.groupby(['group', 'Data wydania']).count()['text']).tolist()[:-1]
     embeddings = torch.vsplit(embeddings, sections)
-    if aggregator.sample_size:
-        day_embeddings = aggregator(pad_sequence(embeddings, batch_first=True)).numpy()
+    print(aggregator.sample_size)
+    if aggregator.sample_size is not None:
+        ds = TensorDataset(pad_sequence(embeddings, batch_first=True))
+        # day_embeddings = aggregator.predict(pad_sequence(embeddings, batch_first=True)).detach().numpy()
     else:
-        day_embeddings = np.concatenate([aggregator(t.unsqueeze(0)).numpy() for t in embeddings], axis=0)
+        ds = SimpleDataset(embeddings)
+        # day_embeddings = np.concatenate([aggregator.predict(t.unsqueeze(0)).detach().numpy() for t in embeddings], axis=0)
+    dl = DataLoader(ds, batch_size=batch_size, num_workers=10, pin_memory=True)
+    trainer = pl.Trainer(devices=1, precision='bf16-mixed', logger=False, deterministic=deterministic)
+    day_embeddings = torch.cat(trainer.predict(aggregator, dl), dim=0).numpy()
     # day_embeddings = np.stack([np.mean(t, axis=0) for t in np.vsplit(embeddings, sections)], axis=0)
     embedding_df = text_df[['group', 'Data wydania']].drop_duplicates().reset_index(drop=True)
     embedding_df['embedding'] = day_embeddings.tolist()
@@ -218,6 +223,9 @@ class MyClassifier(pl.LightningModule):
             sequence_length: int = 30,
             lr: float = 0.001,
             weight_decay: float = 0.01,
+            train_dataloader_len: int | None = None, 
+            warmup_proportion: float = .1, 
+            max_epochs: int | None = None,
             class_ratios: torch.Tensor | None = None,
             input_limit: slice | None = None,
             print_test_samples: bool = False
@@ -232,6 +240,9 @@ class MyClassifier(pl.LightningModule):
         self.lr = lr
         self.weight_decay = weight_decay
         self.print_test_samples = print_test_samples
+        self.train_dataloader_len = train_dataloader_len
+        self.warmup_proportion = warmup_proportion
+        self.max_epochs = max_epochs
         
         self.init_loss_fn(class_ratios)
 
@@ -276,8 +287,8 @@ class MyClassifier(pl.LightningModule):
 
     def on_validation_epoch_end(self) -> None:
         metrics = {
-            'val_acc': self.acc.compute(),
-            'val_f1': self.f1.compute().mean()
+            'val_acc_micro': self.acc.compute(),
+            'val_f1_macro': self.f1.compute().mean()
         }
         self.log_dict(metrics)
         self.acc.reset()
@@ -306,9 +317,12 @@ class MyClassifier(pl.LightningModule):
         metrics = {
             'test_acc': self.acc.compute()
         }
-        metrics['test_f1_neg'], metrics['test_f1_pos'] = self.f1.compute()
-        metrics['test_precision_neg'], metrics['test_precision_pos'] = self.prec.compute()
-        metrics['test_recall_neg'], metrics['test_recall_pos'] = self.rec.compute()
+        f1 = self.f1.compute()
+        metrics['test_f1_0'], metrics['test_f1_1'], metrics['test_f1_macro'] = f1[0], f1[1], f1.mean(dim=0)
+        prec = self.prec.compute()
+        metrics['test_precision_0'], metrics['test_precision_1'] = prec[0], prec[1]
+        rec = self.rec.compute()
+        metrics['test_recall_0'], metrics['test_recall_1'] = rec[0], rec[1]
         shift = self.shift.compute().float()
         metrics['test_shift'], metrics['test_shift_std'] = shift.mean(), shift.std()
         shift = self.shift2.compute().float()
@@ -326,15 +340,20 @@ class MyClassifier(pl.LightningModule):
 
     def configure_optimizers(self):
         optimizer = torch.optim.Adam(self.parameters(), lr=self.lr, weight_decay=self.weight_decay)
-        return {
-            'optimizer': optimizer,
-            'lr_scheduler': {
-                'scheduler': ReduceLROnPlateau(optimizer, 'min', .5, 10),
-                'monitor': 'val_loss',
-                'interval': 'epoch',
-                'frequency': 1
+        if self.warmup_proportion is not None and self.train_dataloader_len is not None:
+            num_training_steps = self.max_epochs * self.train_dataloader_len
+            num_warmup_steps = int(self.warmup_proportion * num_training_steps)
+            scheduler = get_linear_schedule_with_warmup(optimizer, num_warmup_steps, num_training_steps)
+            return {
+                'optimizer': optimizer,
+                'lr_scheduler': {
+                    'scheduler': scheduler,
+                    'interval': 'epoch',
+                    'frequency': 1
+                }
             }
-        }
+        else:
+            return optimizer
 
 class MyLSTM(MyClassifier):
     def __init__(
@@ -413,26 +432,27 @@ class MyTransformer(MyClassifier):
         self.input_net = nn.Sequential(
             nn.Linear(self.input_dim, 384),
             nn.Dropout(.1),
-            nn.Tanh(),
+            nn.ReLU(),
             nn.Linear(384, 256),
             nn.Dropout(.1),
-            nn.Tanh(),
+            nn.ReLU(),
             nn.Linear(256, self.hidden_dim),
             nn.Dropout(.1),
-            nn.Tanh(),
+            nn.ReLU(),
         )
         self.positional_encoding = PositionalEncoding(self.hidden_dim, max_len=self.sequence_length)
         self.transformer = nn.TransformerEncoder(
-            nn.TransformerEncoderLayer(self.hidden_dim, self.n_heads, activation=nn.functional.tanh, batch_first=True),
+            nn.TransformerEncoderLayer(self.hidden_dim, self.n_heads, activation=nn.functional.relu, batch_first=True),
             self.transformer_layers
         )
         self.output_net = nn.Sequential(
             nn.AdaptiveAvgPool1d(1),
             nn.Flatten(),
             nn.Dropout(.1),
-            nn.Linear(self.hidden_dim, 2),
-            nn.Softmax(dim=-1)
+            nn.Linear(self.hidden_dim, 2)
         )
+
+        self.save_hyperparameters()
 
     def forward(self, x):
         if self.input_limit is not None:
@@ -442,6 +462,26 @@ class MyTransformer(MyClassifier):
         x = self.transformer(x)
         x = self.output_net(x.permute(0, 2, 1))
         return x
+
+def train_test(
+        model: MyClassifier, 
+        ds: Dataset, 
+        groups: torch.Tensor, 
+        batch_size: int = 1, 
+        precision: str = 'bf16-mixed', 
+        max_epochs: int = -1,
+        max_time: Any | None = None, 
+        deterministic: bool = False
+):
+    trainer = init_trainer(precision, early_stopping=True, logging={'name': 'detector', 'project': 'crisis-detector'}, max_epochs=max_epochs, max_time=max_time, deterministic=deterministic)
+    train_ds, test_ds, val_ds = split_dataset(ds, groups, n_splits=10, validate=True)
+    train_dl = DataLoader(train_ds, batch_size, shuffle=True, num_workers=10, pin_memory=True)
+    val_dl = DataLoader(val_ds, batch_size, shuffle=False, num_workers=10, pin_memory=True)
+    test_dl = DataLoader(test_ds, batch_size, shuffle=False, num_workers=10, pin_memory=True)
+    model.train_dataloader_len = len(train_dl)
+    model.max_epochs = max_epochs
+    trainer.fit(model, train_dl, val_dl) 
+    trainer.test(model, test_dl, 'best')
 
 def cross_validate(
         model: MyClassifier,
@@ -564,7 +604,6 @@ def main():
     deterministic = True
     end_to_end = False
     text_samples = 50
-    embedder_name = 'sdadas/polish-distilroberta'
 
     if deterministic:
         seed_everything(42, workers=True)
@@ -588,12 +627,11 @@ def main():
         text_df = pd.read_feather(POSTS_DF_PATH)
 
     if end_to_end or not os.path.isfile(EMBEDDINGS_PATH):
-        tokenizer = AutoTokenizer.from_pretrained(embedder_name)
+        model = TextEmbedder.load_from_checkpoint('saved_objects/finetuned_embedder.ckpt')
+        tokenizer = AutoTokenizer.from_pretrained(model.pretrained_name)
         ds = SeriesDataset(text_df['text'])
         collate_fn = lambda x: tokenizer(x, truncation=True, padding=True, max_length=256, return_tensors='pt')
         dl = DataLoader(ds, 64, num_workers=10, collate_fn=collate_fn, pin_memory=True)
-        # model = TextEmbedder.load_from_checkpoint('saved_objects/finetuned-xlm-roberta-base.ckpt')
-        model = TextEmbedder(embedder_name)
         trainer = pl.Trainer(devices=1, precision='bf16-mixed', logger=False, deterministic=deterministic)
         embeddings = trainer.predict(model, dl)
         embeddings = torch.cat(embeddings, dim=0)
@@ -615,18 +653,15 @@ def main():
     # post_features = torch.tensor(pd.get_dummies(text_df['Typ medium']).values, dtype=torch.float32)
     # embeddings = torch.cat((embeddings, post_features), dim=-1)
 
-    aggregator = MeanAggregator(embedding_dim=embeddings.shape[1])
-    days_df = add_embeddings(days_df, text_df, embeddings, aggregator)
+    aggregator = TransformerAggregator.load_from_checkpoint('saved_objects/pretrained_aggregator.ckpt')
+    days_df = add_embeddings(days_df, text_df, embeddings, aggregator, 1024, deterministic=deterministic)
     ds, groups = create_dataset(days_df)
 
     if deterministic:
         seed_everything(42, workers=True)
-
-    train_ds, test_ds, val_ds = split_dataset(ds, groups)
-    model = MyTransformer(print_test_samples=True)
-    trainer = train_model(model, train_ds, val_ds, precision='bf16-mixed', max_epochs=-1, deterministic=deterministic)
-    test_dl = DataLoader(test_ds, batch_size=512, num_workers=1, pin_memory=True)
-    trainer.test(dataloaders=test_dl, ckpt_path='best', verbose=True)
+    
+    model = MyTransformer(print_test_samples=False)
+    train_test(model, ds, groups, batch_size=512, max_epochs=100, deterministic=deterministic)
 
     # stats = cross_validate(MyTransformer(input_dim=ds[0][0].shape[-1]), ds, groups, n_splits=5, precision='bf16-mixed', deterministic=deterministic)
     # df.to_feather('saved_objects/predictions.feather')

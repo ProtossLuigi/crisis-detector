@@ -260,7 +260,10 @@ class SeriesDataset(Dataset):
 class SimpleDataset(Dataset):
     def __init__(self, *data) -> None:
         super().__init__()
-        self.data = list(zip(*data))
+        if len(data) == 1:
+            self.data = data
+        else:
+            self.data = list(zip(*data))
     
     def __getitem__(self, index) -> Any:
         return self.data[index]

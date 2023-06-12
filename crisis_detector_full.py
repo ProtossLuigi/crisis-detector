@@ -14,7 +14,7 @@ import lightning as pl
 from lightning.pytorch import seed_everything
 from lightning.pytorch.tuner import Tuner
 import torchmetrics
-from transformers import AutoTokenizer
+from transformers import AutoTokenizer, get_linear_schedule_with_warmup
 
 from data_tools import get_all_data, get_data_with_dates, load_data
 from training_tools import init_trainer, split_dataset, fold_dataset
@@ -22,7 +22,7 @@ from embedder import TextEmbedder
 from aggregator import EmbeddingAggregator, MeanAggregator, TransformerAggregator
 from crisis_detector import MyClassifier, ShiftMetric, Shift2Metric, MyTransformer
 
-torch.set_float32_matmul_precision('high')
+torch.set_float32_matmul_precision('medium')
 
 def merge_indices(*tensors) -> torch.Tensor:
     return torch.cat(tensors).unique()
@@ -113,6 +113,9 @@ class CrisisDetector(pl.LightningModule):
             embedder_batch_size: int = 0,
             lr: float = 1e-5,
             weight_decay: float = 0.01,
+            train_dataloader_len: int | None = None, 
+            warmup_proportion: float = .1, 
+            max_epochs: int | None = None,
             print_test_samples: bool = False,
             *args: Any,
             **kwargs: Any
@@ -123,6 +126,9 @@ class CrisisDetector(pl.LightningModule):
         self.lr = lr
         self.weight_decay = weight_decay
         self.print_test_samples = print_test_samples
+        self.print_test_samples = print_test_samples
+        self.train_dataloader_len = train_dataloader_len
+        self.warmup_proportion = warmup_proportion
 
         self.embedder = embedder
         self.aggregator = aggregator
@@ -136,6 +142,8 @@ class CrisisDetector(pl.LightningModule):
         self.shift2 = Shift2Metric()
         
         self.init_loss_fn()
+
+        self.save_hyperparameters(ignore=['embedder', 'aggregator', 'detector'])
     
     def init_loss_fn(self, class_ratios: torch.Tensor | None = None) -> None:
         self.class_weights = .5 / class_ratios if class_ratios else None
@@ -145,7 +153,7 @@ class CrisisDetector(pl.LightningModule):
         if self.batch_size > 0:
             embeddings = []
             for i in range(0, input_ids.shape[0], self.batch_size):
-                embeddings.append(self.embedder(input_ids=input_ids[i:i+self.batch_size], attention_mask=attention_mask[i:i+self.batch_size]).hidden_states[0][:, 0, :])
+                embeddings.append(self.embedder(input_ids=input_ids[i:i+self.batch_size], attention_mask=attention_mask[i:i+self.batch_size]))
             if embeddings:
                 embeddings = torch.cat(embeddings)
             else:
@@ -220,19 +228,24 @@ class CrisisDetector(pl.LightningModule):
 
     def configure_optimizers(self) -> dict:
         optimizer = torch.optim.Adam([
-            # {'params': self.embedder.parameters(), 'lr': 1e-5},
-            # {'params': self.aggregator.parameters(), 'lr': 1e-3},
+            {'params': self.embedder.parameters(), 'lr': 1e-5},
+            {'params': self.aggregator.parameters(), 'lr': 1e-3},
             {'params': self.detector.parameters(), 'lr': 1e-3}
         ], weight_decay=self.weight_decay)
-        return {
-            'optimizer': optimizer,
-            'lr_scheduler': {
-                'scheduler': ReduceLROnPlateau(optimizer, 'min', .5, 10),
-                'monitor': 'val_loss',
-                'interval': 'epoch',
-                'frequency': 1
+        if self.warmup_proportion is not None and self.train_dataloader_len is not None:
+            num_training_steps = self.max_epochs * self.train_dataloader_len
+            num_warmup_steps = int(self.warmup_proportion * num_training_steps)
+            scheduler = get_linear_schedule_with_warmup(optimizer, num_warmup_steps, num_training_steps)
+            return {
+                'optimizer': optimizer,
+                'lr_scheduler': {
+                    'scheduler': scheduler,
+                    'interval': 'step',
+                    'frequency': 50
+                }
             }
-        }
+        else:
+            return optimizer
 
 def tokenize_dataset(text: List[str], tokenizer_name: str = 'xlm-roberta-base', batch_size: int | None = None, max_length: int = 256) -> Tuple[torch.Tensor, torch.Tensor]:
     tokenizer = AutoTokenizer.from_pretrained(tokenizer_name)
@@ -333,14 +346,11 @@ def train_test(
         max_time: Any | None = None, 
         deterministic: bool = False
 ):
-    trainer = init_trainer(precision, early_stopping=False, logging=True, max_epochs=max_epochs, max_time=max_time, deterministic=deterministic)
+    trainer = init_trainer(precision, early_stopping=False, logging={'name': 'full-detector', 'project': 'crisis-detector'}, max_epochs=max_epochs, max_time=max_time, deterministic=deterministic)
     train_ds, test_ds, val_ds = split_dataset(ds, groups, n_splits=10, validate=True)
     train_dl = DataLoader(train_ds, batch_size, shuffle=True, num_workers=10, collate_fn=CombinedDataset.collate, pin_memory=True)
     val_dl = DataLoader(val_ds, batch_size, shuffle=False, num_workers=10, collate_fn=CombinedDataset.collate, pin_memory=True)
     test_dl = DataLoader(test_ds, batch_size, shuffle=False, num_workers=1, collate_fn=CombinedDataset.collate, pin_memory=True)
-    # optimal_lr = Tuner(trainer).lr_find(model, train_dl, val_dl)
-    # print(optimal_lr)
-    # model.lr = optimal_lr
     trainer.fit(model, train_dl, val_dl)
     trainer.test(model, test_dl, 'best')
 
@@ -348,7 +358,6 @@ def main():
     deterministic = True
     end_to_end = False
     text_samples = 50
-    embedder_name = 'sdadas/polish-distilroberta'
 
     if deterministic:
         seed_everything(42, workers=True)
@@ -357,6 +366,10 @@ def main():
     POSTS_DF_PATH = 'saved_objects/posts_df' + str(text_samples) + '.feather'
     INPUT_IDS_PATH = 'saved_objects/input_ids' + str(text_samples) + '.pt'
     ATTENTION_MASK_PATH = 'saved_objects/attention_mask' + str(text_samples) + '.pt'
+    
+    embedder = TextEmbedder.load_from_checkpoint('saved_objects/finetuned_embedder.ckpt')
+    aggregator = TransformerAggregator.load_from_checkpoint('saved_objects/pretrained_aggregator.ckpt')
+    detector = MyTransformer.load_from_checkpoint('saved_objects/pretrained_detector.ckpt')
 
     if end_to_end or not (os.path.isfile(DAYS_DF_PATH) and os.path.isfile(POSTS_DF_PATH)):
 
@@ -373,7 +386,7 @@ def main():
         text_df = pd.read_feather(POSTS_DF_PATH)
     
     if end_to_end or not (os.path.isfile(INPUT_IDS_PATH) and os.path.isfile(ATTENTION_MASK_PATH)):
-        input_ids, attention_mask = tokenize_dataset(text_df['text'].to_list(), tokenizer_name=embedder_name, batch_size=256)
+        input_ids, attention_mask = tokenize_dataset(text_df['text'].to_list(), tokenizer_name=embedder.pretrained_name, batch_size=256)
 
         torch.save(input_ids, INPUT_IDS_PATH)
         torch.save(attention_mask, ATTENTION_MASK_PATH)
@@ -390,13 +403,8 @@ def main():
         input_ids,
         attention_mask
     )
-    embedder = TextEmbedder(embedder_name)
-    post_features = embedder.model.config.hidden_size + ds[0][0][1].shape[-1]
-    aggregator = TransformerAggregator(sample_size=text_samples, embedding_dim=post_features)
-    detector = MyTransformer(input_dim=post_features + ds[0][0][0].shape[-1])
-    # detector = MyTransformer(input_dim=ds[0][0][0].shape[-1])
-    model = CrisisDetector(embedder, aggregator, detector, embedder_batch_size=32)
-    train_test(model, ds, groups, batch_size=8, max_epochs=2, deterministic=deterministic)
+    model = CrisisDetector(embedder, aggregator, detector, embedder_batch_size=1)
+    train_test(model, ds, groups, batch_size=1, max_epochs=2, deterministic=deterministic)
 
 if __name__ == '__main__':
     main()
