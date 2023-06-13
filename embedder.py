@@ -5,6 +5,7 @@ from tqdm import tqdm
 
 import torch
 from torch import nn
+from torch.utils.data import Dataset, DataLoader
 from torch.optim.lr_scheduler import ReduceLROnPlateau
 import lightning as pl
 from lightning.pytorch import seed_everything
@@ -12,7 +13,7 @@ import torchmetrics
 from transformers import AutoModel, AutoConfig, AutoTokenizer, get_linear_schedule_with_warmup
 
 from data_tools import load_data, DictDataset, load_text_data, get_verified_data, get_data_with_dates
-from training_tools import train_model, test_model, cross_validate, split_dataset
+from training_tools import split_dataset, init_trainer
 
 torch.set_float32_matmul_precision('medium')
 
@@ -145,16 +146,37 @@ def create_token_dataset(df: pd.DataFrame, tokenizer_name: str, batch_size: int 
     tokenizer = None
     return ds
 
+def train_test(
+        model: TextEmbedder, 
+        ds: Dataset, 
+        groups: torch.Tensor, 
+        batch_size: int = 1, 
+        precision: str = 'bf16-mixed', 
+        max_epochs: int = -1,
+        max_time: Any | None = None, 
+        deterministic: bool = False
+):
+    trainer = init_trainer(precision, early_stopping=True, logging={'name': 'embedder', 'project': 'crisis-detector'}, max_epochs=max_epochs, max_time=max_time, deterministic=deterministic)
+    train_ds, test_ds, val_ds = split_dataset(ds, groups, n_splits=10, validate=True)
+    train_dl = DataLoader(train_ds, batch_size, shuffle=True, num_workers=10, pin_memory=True)
+    val_dl = DataLoader(val_ds, batch_size, shuffle=False, num_workers=10, pin_memory=True)
+    test_dl = DataLoader(test_ds, batch_size, shuffle=False, num_workers=10, pin_memory=True)
+    model.train_dataloader_len = len(train_dl)
+    model.max_epochs = max_epochs
+    trainer.fit(model, train_dl, val_dl) 
+    trainer.test(model, test_dl, 'best')
+
 def main():
     deterministic = True
     end_to_end = False
     samples_limit = 1000
-    batch_size = 128
+    batch_size = 256
     max_epochs = 50
     
     TEXTS_PATH = 'saved_objects/texts_df' + str(samples_limit) + '.feather'
     DATASET_PATH = 'saved_objects/token_ds' + str(samples_limit) + '.pt'
     pretrained_name = 'allegro/herbert-base-cased'
+    # pretrained_name = 'sdadas/polish-distilroberta'
 
     if deterministic:
         seed_everything(42)
@@ -180,18 +202,12 @@ def main():
     
     groups = torch.tensor(posts_df['group'].values)
 
-    train_ds, val_ds, test_ds = split_dataset(ds, groups, stratify=True)
     # class_ratio = train_ds[:]['label'].unique(return_counts=True)[1] / len(train_ds)
     # weight = torch.pow(class_ratio * class_ratio.shape[0], -1)
     weight = None
 
     model = TextEmbedder(pretrained_name, max_epochs=max_epochs, weight=weight)
-    trainer = train_model(model, train_ds, val_ds, batch_size=batch_size, max_epochs=max_epochs, deterministic=deterministic)
-    # model = TextEmbedder.load_from_checkpoint('checkpoints/epoch=0-step=1828.ckpt', pretrained_name=pretrained_name)
-    # test_model(train_ds, trainer=trainer, batch_size=batch_size)
-    test_model(test_ds, trainer=trainer, batch_size=batch_size)
-    
-    # cross_validate(TextEmbedder, (pretrained_name,), ds, groups, use_weights=True, n_splits=5, batch_size=64, max_epochs=1, deterministic=deterministic)
+    train_test(model, ds, groups, batch_size, max_epochs=max_epochs, deterministic=deterministic)
     
 
 if __name__ == '__main__':

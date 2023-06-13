@@ -368,7 +368,8 @@ def main():
     ATTENTION_MASK_PATH = 'saved_objects/attention_mask' + str(text_samples) + '.pt'
     
     embedder = TextEmbedder.load_from_checkpoint('saved_objects/finetuned_embedder.ckpt')
-    aggregator = TransformerAggregator.load_from_checkpoint('saved_objects/pretrained_aggregator.ckpt')
+    # aggregator = TransformerAggregator.load_from_checkpoint('saved_objects/pretrained_aggregator.ckpt')
+    aggregator = MeanAggregator(sample_size=text_samples)
     detector = MyTransformer.load_from_checkpoint('saved_objects/pretrained_detector.ckpt')
 
     if end_to_end or not (os.path.isfile(DAYS_DF_PATH) and os.path.isfile(POSTS_DF_PATH)):

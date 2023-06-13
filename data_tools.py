@@ -151,14 +151,14 @@ def extract_data(
     return df, text_df
 
 def load_data(
-        metadata: pd.DataFrame, num_samples: int = 0, drop_invalid: bool = False, class_balance: float | None = None
+        metadata: pd.DataFrame, num_samples: int = 0, drop_invalid: bool = False, class_balance: float | None = None, window_size: int | Tuple[int, int] | None = (59, 30)
 ) -> Tuple[pd.DataFrame, pd.DataFrame]:
     if 'crisis_start' not in metadata.columns:
         metadata['crisis_start'] = None
     dfs, text_dfs = [], []
     for i, row in enumerate(tqdm(metadata.itertuples(), total=len(metadata))):
         try:
-            dfp = extract_data(row.path, row.crisis_start, num_samples, drop_invalid=drop_invalid, class_balance=class_balance)
+            dfp = extract_data(row.path, row.crisis_start, num_samples, drop_invalid=drop_invalid, class_balance=class_balance, window_size=window_size)
             if dfp is None:
                 continue
         except KeyError as e:

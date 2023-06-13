@@ -20,7 +20,7 @@ from sklearn.preprocessing import StandardScaler
 from embedder import TextEmbedder
 from data_tools import load_data, SimpleDataset, SeriesDataset, get_all_data, get_data_with_dates, get_full_text_data
 from training_tools import split_dataset, train_model, test_model, fold_dataset, init_trainer
-from aggregator import EmbeddingAggregator, TransformerAggregator
+from aggregator import EmbeddingAggregator, MeanAggregator, TransformerAggregator
 
 torch.set_float32_matmul_precision('high')
 
@@ -304,7 +304,8 @@ class MyClassifier(pl.LightningModule):
             raise TypeError(f'Invalid batch type {type(batch)}. Expected tuple, list or dict.')
         y_pred = self(X)
         if self.print_test_samples:
-            print(torch.argmax(y_pred, -1) - y)
+            print(y)
+            print(torch.argmax(y_pred, -1))
         self.acc.update(torch.argmax(y_pred, -1), y)
         self.f1.update(torch.argmax(y_pred, -1), y)
         self.prec.update(torch.argmax(y_pred, -1), y)
@@ -432,17 +433,17 @@ class MyTransformer(MyClassifier):
         self.input_net = nn.Sequential(
             nn.Linear(self.input_dim, 384),
             nn.Dropout(.1),
-            nn.ReLU(),
+            nn.PReLU(),
             nn.Linear(384, 256),
             nn.Dropout(.1),
-            nn.ReLU(),
+            nn.PReLU(),
             nn.Linear(256, self.hidden_dim),
             nn.Dropout(.1),
-            nn.ReLU(),
+            nn.PReLU(),
         )
         self.positional_encoding = PositionalEncoding(self.hidden_dim, max_len=self.sequence_length)
         self.transformer = nn.TransformerEncoder(
-            nn.TransformerEncoderLayer(self.hidden_dim, self.n_heads, activation=nn.functional.relu, batch_first=True),
+            nn.TransformerEncoderLayer(self.hidden_dim, self.n_heads, activation=nn.functional.leaky_relu, batch_first=True),
             self.transformer_layers
         )
         self.output_net = nn.Sequential(
@@ -616,7 +617,7 @@ def main():
 
         data = get_data_with_dates(get_all_data())
 
-        days_df, text_df = load_data(data, text_samples, True, None)
+        days_df, text_df = load_data(data, text_samples, True, None, (59, 30))
         days_df.to_feather(DAYS_DF_PATH)
         text_df.to_feather(POSTS_DF_PATH)
 
@@ -653,15 +654,16 @@ def main():
     # post_features = torch.tensor(pd.get_dummies(text_df['Typ medium']).values, dtype=torch.float32)
     # embeddings = torch.cat((embeddings, post_features), dim=-1)
 
-    aggregator = TransformerAggregator.load_from_checkpoint('saved_objects/pretrained_aggregator.ckpt')
+    # aggregator = TransformerAggregator.load_from_checkpoint('saved_objects/pretrained_aggregator.ckpt')
+    aggregator = MeanAggregator(sample_size=text_samples)
     days_df = add_embeddings(days_df, text_df, embeddings, aggregator, 1024, deterministic=deterministic)
-    ds, groups = create_dataset(days_df)
+    ds, groups = create_dataset(days_df, 30)
 
     if deterministic:
         seed_everything(42, workers=True)
     
-    model = MyTransformer(print_test_samples=False)
-    train_test(model, ds, groups, batch_size=512, max_epochs=100, deterministic=deterministic)
+    model = MyTransformer(print_test_samples=True)
+    train_test(model, ds, groups, batch_size=512, max_epochs=150, deterministic=deterministic)
 
     # stats = cross_validate(MyTransformer(input_dim=ds[0][0].shape[-1]), ds, groups, n_splits=5, precision='bf16-mixed', deterministic=deterministic)
     # df.to_feather('saved_objects/predictions.feather')

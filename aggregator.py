@@ -211,7 +211,7 @@ class TransformerAggregator(EmbeddingAggregator):
 
         # self.positional_encoding = PositionalEncoding(self.embedding_dim, max_len=self.sample_size)
         self.transformer = nn.TransformerEncoder(
-            nn.TransformerEncoderLayer(self.embedding_dim, self.n_heads, activation=nn.functional.leaky_relu, batch_first=True),
+            nn.TransformerEncoderLayer(self.embedding_dim, self.n_heads, activation=nn.functional.relu, batch_first=True),
             self.transformer_layers
         )
 
@@ -400,8 +400,9 @@ def main():
         with open(EMBEDDINGS_PATH, 'rb') as f:
             embeddings = torch.load(f)
     
-    ds, groups = create_dataset(posts_df, embeddings, 0., sample_size, batch_size > 0, padding, balance_classes=True)
-    model = TransformerAggregator(sample_size=sample_size)
+    ds, groups = create_dataset(posts_df, embeddings, .02, sample_size, batch_size > 0, padding, balance_classes=True)
+    print(len(ds))
+    model = MeanAggregator(sample_size=sample_size)
     train_test(model, ds, groups, batch_size=batch_size, max_epochs=100, deterministic=deterministic)
     
     # cross_validate(MeanAggregator, {'sample_size': sample_size}, ds, groups, True, 5, batch_size=batch_size, num_workers=10, deterministic=deterministic)
