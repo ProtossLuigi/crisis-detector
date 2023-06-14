@@ -227,7 +227,7 @@ def extract_data(
         window_size: int | Tuple[int, int] = 30,
         drop_invalid: bool = False
 ) -> pd.DataFrame | None:
-    src_df = pd.read_excel(filename)
+    src_df = pd.read_feather(filename)
 
     if type(window_size) == int:
         window_size = (window_size, window_size)
@@ -359,7 +359,7 @@ def cross_validate(
 
 def main():
     deterministic = True
-    end_to_end = False
+    end_to_end = True
     sample_size = 50
     batch_size = 512
     padding = False
@@ -382,12 +382,12 @@ def main():
         posts_df = pd.read_feather(TEXTS_PATH)
     
     if end_to_end or not os.path.isfile(EMBEDDINGS_PATH):
-        embedder = TextEmbedder.load_from_checkpoint('saved_objects/finetuned_embedder.ckpt')
+        embedder = TextEmbedder.load_from_checkpoint('saved_objects/finetuned_distilroberta.ckpt')
         tokenizer = AutoTokenizer.from_pretrained(embedder.pretrained_name)
         ds = SeriesDataset(posts_df['text'])
         collate_fn = lambda x: tokenizer(x, truncation=True, padding=True, max_length=256, return_tensors='pt')
         dl = DataLoader(ds, 128, num_workers=10, collate_fn=collate_fn, pin_memory=True)
-        trainer = pl.Trainer(precision='bf16-mixed', logger=False, deterministic=deterministic)
+        trainer = pl.Trainer(devices=1, precision='bf16-mixed', logger=False, deterministic=deterministic)
         embeddings = trainer.predict(embedder, dl)
         embeddings = torch.cat(embeddings, dim=0)
 
@@ -402,7 +402,7 @@ def main():
     
     ds, groups = create_dataset(posts_df, embeddings, .02, sample_size, batch_size > 0, padding, balance_classes=True)
     print(len(ds))
-    model = MeanAggregator(sample_size=sample_size)
+    model = TransformerAggregator(sample_size=sample_size)
     train_test(model, ds, groups, batch_size=batch_size, max_epochs=100, deterministic=deterministic)
     
     # cross_validate(MeanAggregator, {'sample_size': sample_size}, ds, groups, True, 5, batch_size=batch_size, num_workers=10, deterministic=deterministic)

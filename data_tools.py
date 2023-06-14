@@ -4,41 +4,71 @@ import numpy as np
 import pandas as pd
 from tqdm import tqdm
 import os
+import shutil
+from pathlib import Path
 
 import torch
 from torch.utils.data import Dataset
 
 DATA_DIR = 'dane'
-VERIFIED_DIR = 'dane/Etap I - zweryfikowane szeregi'
-FULL_TEXT_DIR = 'dane/Bazy - pełne treści publikacji'
-DATES_FILE = 'dane/Crisis Detector.xlsx'
+DATA_DIR2 = 'data'
+VERIFIED_DIR = 'data/Etap I - zweryfikowane szeregi'
+FULL_TEXT_DIR = 'data/Bazy - pełne treści publikacji'
+DATES_FILE = 'data/Crisis Detector.feather'
 
 FILE_BLACKLIST = [
-    'Daty_kryzysów.xlsx',
-    'Crisis Detector - lista wątków_.docx',
-    'Legenda _ opisy kolumn.docx',
-    'Fake news_baza publikacji.xlsx',
-    'Crisis Detector.xlsx'
+    'Daty_kryzysów',
+    'Fake news_baza publikacji',
+    'Crisis Detector',
+    'Marian Banaś',
+    'Anna Lewandowska'
 ]
 
+def prepare_data(force: bool = False):
+    if os.path.isdir(DATA_DIR2):
+        if force:
+            shutil.rmtree(DATA_DIR2)
+        else:
+            print(f"{DATA_DIR2} dir already present and force=False. Skipping...")
+            return
+    filepaths = [Path(dirpath, filename) for dirpath, _, filenames in os.walk(DATA_DIR) for filename in filenames]
+    for filepath in tqdm(filepaths):
+        if filepath.name in FILE_BLACKLIST or filepath.suffix != '.xlsx':
+            continue
+        target_path = Path(DATA_DIR2, *filepath.with_suffix('.parquet').parts[1:])
+        os.makedirs(target_path.parent, exist_ok=True)
+        try:
+            df = pd.read_excel(filepath)
+            df.columns = df.columns.astype(str)
+            if 'Kryzys' in df.columns:
+                df['Kryzys'] = df['Kryzys'].astype(str)
+            df.to_feather(target_path)
+        except Exception as e:
+            print(f"Error in {filepath}")
+            raise e
+    df = pd.read_excel('dane/Crisis Detector.xlsx')
+    df['Nazwa pliku'] = df['Nazwa pliku'].apply(lambda x: x[:-5] + '.feather' if type(x) == str else x)
+    df['Nazwa pliku 2'] = df['Nazwa pliku 2'].apply(lambda x: x[:-5] + '.feather' if type(x) == str else x)
+    df.to_feather(DATES_FILE)
+
 def get_verified_data() -> List[str]:
-    filenames = [os.path.join(VERIFIED_DIR, file) for file in os.listdir(VERIFIED_DIR) if os.path.isfile(os.path.join(VERIFIED_DIR, file))]
-    filenames = [fname for fname in filenames if os.path.basename(fname) not in FILE_BLACKLIST]
+    filenames = [Path(VERIFIED_DIR, file) for file in os.listdir(VERIFIED_DIR) if os.path.isfile(Path(VERIFIED_DIR, file))]
+    filenames = [fname for fname in filenames if fname.with_suffix('').name not in FILE_BLACKLIST]
     return filenames
 
 def get_all_data() -> List[str]:
-    filenames = [os.path.join(DATA_DIR, file) for file in os.listdir(DATA_DIR) if os.path.isfile(os.path.join(DATA_DIR, file))]
-    filenames += [os.path.join(VERIFIED_DIR, file) for file in os.listdir(VERIFIED_DIR) if os.path.isfile(os.path.join(VERIFIED_DIR, file))]
-    filenames = [fname for fname in filenames if os.path.basename(fname).replace("'","_") not in FILE_BLACKLIST]
+    filenames = [Path(DATA_DIR2, file) for file in os.listdir(DATA_DIR2) if os.path.isfile(Path(DATA_DIR2, file))]
+    filenames += [Path(VERIFIED_DIR, file) for file in os.listdir(VERIFIED_DIR) if os.path.isfile(Path(VERIFIED_DIR, file))]
+    filenames = [fname for fname in filenames if fname.with_suffix('').name.replace("'","_") not in FILE_BLACKLIST]
     return filenames
 
 def get_full_text_data() -> List[str]:
-    filenames = [os.path.join(FULL_TEXT_DIR, file) for file in os.listdir(FULL_TEXT_DIR) if os.path.isfile(os.path.join(FULL_TEXT_DIR, file))]
-    filenames = [fname for fname in filenames if os.path.basename(fname).replace("'","_") not in FILE_BLACKLIST]
+    filenames = [Path(FULL_TEXT_DIR, file) for file in os.listdir(FULL_TEXT_DIR) if os.path.isfile(Path(FULL_TEXT_DIR, file))]
+    filenames = [fname for fname in filenames if fname.with_suffix('').name.replace("'","_") not in FILE_BLACKLIST]
     return filenames
 
 def get_crisis_metadata(drop_nan_dates: bool = False) -> pd.DataFrame:
-    df = pd.read_excel(DATES_FILE).drop(columns=['Unnamed: 0'])
+    df = pd.read_feather(DATES_FILE).drop(columns=['Unnamed: 0'])
     df = df[df['Baza']].drop(columns=['Baza'])
     if drop_nan_dates:
         df = df[df['Data wybuchu kryzysu'].notna()].reset_index(drop=True)
@@ -74,7 +104,7 @@ def extract_data(
         drop_invalid: bool = False,
         class_balance: float | None = None
 ) -> Tuple[pd.DataFrame, pd.DataFrame] | None:
-    src_df = pd.read_excel(filename).sort_values('Data wydania', ignore_index=True)
+    src_df = pd.read_feather(filename).sort_values('Data wydania', ignore_index=True)
     
     new_cols = ['brak', 'negatywny', 'neutralny', 'pozytywny']
     sent_col = 'Wydźwięk' if 'Wydźwięk' in src_df.columns else 'Sentyment'

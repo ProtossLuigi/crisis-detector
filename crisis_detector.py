@@ -603,7 +603,7 @@ def get_predictions(model: MyClassifier, ds: Dataset, num_workers: int = 10, pre
 
 def main():
     deterministic = True
-    end_to_end = False
+    end_to_end = True
     text_samples = 50
 
     if deterministic:
@@ -628,7 +628,7 @@ def main():
         text_df = pd.read_feather(POSTS_DF_PATH)
 
     if end_to_end or not os.path.isfile(EMBEDDINGS_PATH):
-        model = TextEmbedder.load_from_checkpoint('saved_objects/finetuned_embedder.ckpt')
+        model = TextEmbedder.load_from_checkpoint('saved_objects/finetuned_distilroberta.ckpt')
         tokenizer = AutoTokenizer.from_pretrained(model.pretrained_name)
         ds = SeriesDataset(text_df['text'])
         collate_fn = lambda x: tokenizer(x, truncation=True, padding=True, max_length=256, return_tensors='pt')
@@ -654,8 +654,8 @@ def main():
     # post_features = torch.tensor(pd.get_dummies(text_df['Typ medium']).values, dtype=torch.float32)
     # embeddings = torch.cat((embeddings, post_features), dim=-1)
 
-    # aggregator = TransformerAggregator.load_from_checkpoint('saved_objects/pretrained_aggregator.ckpt')
-    aggregator = MeanAggregator(sample_size=text_samples)
+    aggregator = MeanAggregator.load_from_checkpoint('saved_objects/pretrained_aggregator_distilroberta.ckpt')
+    # aggregator = MeanAggregator(sample_size=text_samples)
     days_df = add_embeddings(days_df, text_df, embeddings, aggregator, 1024, deterministic=deterministic)
     ds, groups = create_dataset(days_df, 30)
 

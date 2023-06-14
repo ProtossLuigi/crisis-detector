@@ -171,12 +171,12 @@ def main():
     end_to_end = False
     samples_limit = 1000
     batch_size = 256
-    max_epochs = 50
+    max_epochs = 100
     
     TEXTS_PATH = 'saved_objects/texts_df' + str(samples_limit) + '.feather'
     DATASET_PATH = 'saved_objects/token_ds' + str(samples_limit) + '.pt'
-    pretrained_name = 'allegro/herbert-base-cased'
-    # pretrained_name = 'sdadas/polish-distilroberta'
+    # pretrained_name = 'allegro/herbert-base-cased'
+    pretrained_name = 'sdadas/polish-distilroberta'
 
     if deterministic:
         seed_everything(42)
