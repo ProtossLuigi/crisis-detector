@@ -405,7 +405,7 @@ def main():
         input_ids,
         attention_mask
     )
-    model = CrisisDetector(embedder, aggregator, detector, embedder_batch_size=16)
+    model = CrisisDetector(embedder, aggregator, detector, embedder_batch_size=1)
     train_test(model, ds, groups, batch_size=1, max_epochs=2, deterministic=deterministic)
 
 if __name__ == '__main__':

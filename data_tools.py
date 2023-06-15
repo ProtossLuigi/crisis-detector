@@ -33,7 +33,7 @@ def prepare_data(force: bool = False):
             return
     filepaths = [Path(dirpath, filename) for dirpath, _, filenames in os.walk(DATA_DIR) for filename in filenames]
     for filepath in tqdm(filepaths):
-        if filepath.name in FILE_BLACKLIST or filepath.suffix != '.xlsx':
+        if filepath.with_suffix('').name in FILE_BLACKLIST or filepath.suffix != '.xlsx':
             continue
         target_path = Path(DATA_DIR2, *filepath.with_suffix('.parquet').parts[1:])
         os.makedirs(target_path.parent, exist_ok=True)
