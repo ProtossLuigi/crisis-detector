@@ -152,15 +152,21 @@ class CrisisDetector(pl.LightningModule):
     
     def forward(self, day_features: torch.Tensor, post_features: torch.Tensor, input_ids: torch.Tensor, attention_mask: torch.Tensor, post_counts: torch.Tensor) -> Any:
         if self.batch_size > 0:
-            embeddings = []
-            for i in range(0, input_ids.shape[0], self.batch_size):
-                embeddings.append(self.embedder(input_ids=input_ids[i:i+self.batch_size], attention_mask=attention_mask[i:i+self.batch_size]))
-            if embeddings:
-                embeddings = torch.cat(embeddings)
+            if len(input_ids) > 0:
+                embeddings = torch.cat([self.embedder(input_ids=i, attention_mask=a) for i, a in zip(input_ids.split(self.batch_size), attention_mask.split(self.batch_size))])
             else:
                 embeddings = torch.zeros((0, self.embedder.model.config.hidden_size), dtype=torch.float32, device=self.device)
+            # embeddings = []
+            # for i in range(0, input_ids.shape[0], self.batch_size):
+            #     embeddings.append(self.embedder(input_ids=input_ids[i:i+self.batch_size], attention_mask=attention_mask[i:i+self.batch_size]))
+            # if embeddings:
+            #     embeddings = torch.cat(embeddings)
+            # else:
+            #     embeddings = torch.zeros((0, self.embedder.model.config.hidden_size), dtype=torch.float32, device=self.device)
         else:
-            embeddings = self.embedder(input_ids=input_ids, attention_mask=attention_mask).hidden_states[0][:, 0, :]
+            embeddings = self.embedder(input_ids=input_ids, attention_mask=attention_mask)
+        # if self.training:
+        #     print(torch.cuda.memory_summary(device='cuda:0', abbreviated=True))
         post_features = torch.cat((embeddings, post_features), dim=1)
         post_features = pad_sequence(torch.split(post_features, post_counts.tolist()), batch_first=True)
         if post_features.shape[1] < self.aggregator.sample_size:
@@ -347,7 +353,8 @@ def train_test(
         max_time: Any | None = None, 
         deterministic: bool = False
 ):
-    trainer = init_trainer(precision, early_stopping=False, logging={'name': 'full-detector', 'project': 'crisis-detector'}, max_epochs=max_epochs, max_time=max_time, deterministic=deterministic)
+    # trainer = init_trainer(precision, early_stopping=False, logging={'name': 'full-detector', 'project': 'crisis-detector'}, max_epochs=max_epochs, max_time=max_time, deterministic=deterministic)
+    trainer = init_trainer(precision, early_stopping=False, logging=None, max_epochs=max_epochs, max_time=max_time, deterministic=deterministic)
     train_ds, test_ds, val_ds = split_dataset(ds, groups, n_splits=10, validate=True)
     train_dl = DataLoader(train_ds, batch_size, shuffle=True, num_workers=10, collate_fn=CombinedDataset.collate, pin_memory=True)
     val_dl = DataLoader(val_ds, batch_size, shuffle=False, num_workers=10, collate_fn=CombinedDataset.collate, pin_memory=True)
@@ -358,7 +365,7 @@ def train_test(
 def main():
     deterministic = True
     end_to_end = False
-    text_samples = 50
+    text_samples = 10
 
     if deterministic:
         seed_everything(42, workers=True)
@@ -368,10 +375,12 @@ def main():
     INPUT_IDS_PATH = 'saved_objects/input_ids' + str(text_samples) + '.pt'
     ATTENTION_MASK_PATH = 'saved_objects/attention_mask' + str(text_samples) + '.pt'
     
-    embedder = TextEmbedder.load_from_checkpoint('saved_objects/finetuned_distilroberta.ckpt')
+    # embedder = TextEmbedder.load_from_checkpoint('saved_objects/finetuned_distilroberta.ckpt')
     # aggregator = TransformerAggregator.load_from_checkpoint('saved_objects/pretrained_aggregator.ckpt')
     aggregator = MeanAggregator(sample_size=text_samples)
-    detector = MyTransformer.load_from_checkpoint('saved_objects/pretrained_detector_distilroberta.ckpt')
+    # detector = MyTransformer.load_from_checkpoint('saved_objects/pretrained_detector_distilroberta.ckpt')
+    embedder = TextEmbedder('sdadas/polish-distilroberta')
+    detector = MyTransformer()
 
     if end_to_end or not (os.path.isfile(DAYS_DF_PATH) and os.path.isfile(POSTS_DF_PATH)):
 
@@ -405,7 +414,9 @@ def main():
         input_ids,
         attention_mask
     )
-    model = CrisisDetector(embedder, aggregator, detector, embedder_batch_size=1)
+    
+    model = CrisisDetector(embedder, aggregator, detector, embedder_batch_size=32)
+    # print(torch.cuda.memory_summary(device='cuda:0', abbreviated=True))
     train_test(model, ds, groups, batch_size=1, max_epochs=2, deterministic=deterministic)
 
 if __name__ == '__main__':

@@ -56,7 +56,7 @@ class TextEmbedder(pl.LightningModule):
             x = args[0]
         else:
             x = kwargs
-        return self.model(input_ids=x['input_ids'], attention_mask=x['attention_mask'], return_dict=False)[0][:, 0]
+        return self.model(input_ids=x['input_ids'], attention_mask=x['attention_mask']).last_hidden_state[:, 0]
     
     def training_step(self, batch, batch_idx):
         y_true = batch['label']
