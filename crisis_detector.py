@@ -654,7 +654,7 @@ def main():
     # post_features = torch.tensor(pd.get_dummies(text_df['Typ medium']).values, dtype=torch.float32)
     # embeddings = torch.cat((embeddings, post_features), dim=-1)
 
-    aggregator = MeanAggregator.load_from_checkpoint('saved_objects/pretrained_aggregator_distilroberta.ckpt')
+    aggregator = TransformerAggregator.load_from_checkpoint('saved_objects/pretrained_aggregator_herbert.ckpt')
     # aggregator = MeanAggregator(sample_size=text_samples)
     days_df = add_embeddings(days_df, text_df, embeddings, aggregator, 1024, deterministic=deterministic)
     ds, groups = create_dataset(days_df, 30)

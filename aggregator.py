@@ -401,7 +401,6 @@ def main():
             embeddings = torch.load(f)
     
     ds, groups = create_dataset(posts_df, embeddings, .02, sample_size, batch_size > 0, padding, balance_classes=True)
-    print(len(ds))
     model = TransformerAggregator(sample_size=sample_size)
     train_test(model, ds, groups, batch_size=batch_size, max_epochs=100, deterministic=deterministic)
     

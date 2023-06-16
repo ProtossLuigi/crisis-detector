@@ -15,7 +15,7 @@ from transformers import AutoModel, AutoConfig, AutoTokenizer, get_linear_schedu
 from data_tools import load_data, DictDataset, load_text_data, get_verified_data, get_data_with_dates
 from training_tools import split_dataset, init_trainer
 
-torch.set_float32_matmul_precision('medium')
+torch.set_float32_matmul_precision('high')
 
 class TextEmbedder(pl.LightningModule):
     def __init__(
@@ -39,15 +39,10 @@ class TextEmbedder(pl.LightningModule):
         self.prec = torchmetrics.Precision('multiclass', num_classes=2, average='macro')
         self.rec = torchmetrics.Recall('multiclass', num_classes=2, average='macro')
 
-        # config = AutoConfig.from_pretrained(self.pretrained_name)
-        # config.num_labels = 2
-        # config.output_hidden_states = True
-        self.model = AutoModel.from_pretrained(self.pretrained_name)
-        self.classifier = nn.Sequential(
-            nn.Dropout(.1),
-            nn.ReLU(),
-            nn.Linear(768, 2)
-        )
+        config = AutoConfig.from_pretrained(self.pretrained_name)
+        config.return_dict = False
+        self.model = AutoModel.from_pretrained(self.pretrained_name, config=config)
+        self.classifier = nn.Linear(768, 2)
 
         self.save_hyperparameters()
     
@@ -56,7 +51,7 @@ class TextEmbedder(pl.LightningModule):
             x = args[0]
         else:
             x = kwargs
-        return self.model(input_ids=x['input_ids'], attention_mask=x['attention_mask']).last_hidden_state[:, 0]
+        return self.model(input_ids=x['input_ids'], attention_mask=x['attention_mask'])[1]
     
     def training_step(self, batch, batch_idx):
         y_true = batch['label']
@@ -171,12 +166,12 @@ def main():
     end_to_end = False
     samples_limit = 1000
     batch_size = 256
-    max_epochs = 100
+    max_epochs = 150
     
     TEXTS_PATH = 'saved_objects/texts_df' + str(samples_limit) + '.feather'
     DATASET_PATH = 'saved_objects/token_ds' + str(samples_limit) + '.pt'
-    # pretrained_name = 'allegro/herbert-base-cased'
-    pretrained_name = 'sdadas/polish-distilroberta'
+    pretrained_name = 'allegro/herbert-base-cased'
+    # pretrained_name = 'sdadas/polish-distilroberta'
 
     if deterministic:
         seed_everything(42)
