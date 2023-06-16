@@ -21,7 +21,8 @@ FILE_BLACKLIST = [
     'Fake news_baza publikacji',
     'Crisis Detector',
     'Marian Banaś',
-    'Anna Lewandowska'
+    'Anna Lewandowska',
+    'Marian Banaś'
 ]
 
 def prepare_data(force: bool = False):
