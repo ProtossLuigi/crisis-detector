@@ -41,7 +41,7 @@ def add_embeddings(
         # day_embeddings = np.concatenate([aggregator.predict(t.unsqueeze(0)).detach().numpy() for t in embeddings], axis=0)
     dl = DataLoader(ds, batch_size=batch_size, num_workers=10, pin_memory=True)
     trainer = pl.Trainer(devices=1, precision='bf16-mixed', logger=False, deterministic=deterministic)
-    day_embeddings = torch.cat(trainer.predict(aggregator, dl), dim=0).numpy()
+    day_embeddings = torch.cat(trainer.predict(aggregator, dl), dim=0).float().numpy()
     # day_embeddings = np.stack([np.mean(t, axis=0) for t in np.vsplit(embeddings, sections)], axis=0)
     embedding_df = text_df[['group', 'Data wydania']].drop_duplicates().reset_index(drop=True)
     embedding_df['embedding'] = day_embeddings.tolist()
@@ -654,8 +654,8 @@ def main():
     # post_features = torch.tensor(pd.get_dummies(text_df['Typ medium']).values, dtype=torch.float32)
     # embeddings = torch.cat((embeddings, post_features), dim=-1)
 
-    aggregator = TransformerAggregator.load_from_checkpoint('saved_objects/pretrained_aggregator_herbert.ckpt')
-    # aggregator = MeanAggregator(sample_size=text_samples)
+    # aggregator = TransformerAggregator.load_from_checkpoint('saved_objects/pretrained_aggregator_herbert.ckpt')
+    aggregator = MeanAggregator(sample_size=text_samples)
     days_df = add_embeddings(days_df, text_df, embeddings, aggregator, 1024, deterministic=deterministic)
     ds, groups = create_dataset(days_df, 30)
 

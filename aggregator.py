@@ -22,6 +22,8 @@ from data_tools import get_data_with_dates, get_verified_data, SeriesDataset, Si
 from training_tools import init_trainer, split_dataset, fold_dataset, train_model
 from embedder import TextEmbedder
 
+torch.set_float32_matmul_precision('high')
+
 class EmbeddingAggregator(pl.LightningModule):
     def __init__(
             self,
