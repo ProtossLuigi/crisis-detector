@@ -47,10 +47,11 @@ def prepare_data(force: bool = False):
         except Exception as e:
             print(f"Error in {filepath}")
             raise e
-    df = pd.read_excel('dane/Crisis Detector.xlsx')
-    df['Nazwa pliku'] = df['Nazwa pliku'].apply(lambda x: x[:-5] + '.feather' if type(x) == str else x)
-    df['Nazwa pliku 2'] = df['Nazwa pliku 2'].apply(lambda x: x[:-5] + '.feather' if type(x) == str else x)
-    df.to_feather(DATES_FILE)
+    if os.path.isfile('dane/Crisis Detector.xlsx'):
+        df = pd.read_excel('dane/Crisis Detector.xlsx')
+        df['Nazwa pliku'] = df['Nazwa pliku'].apply(lambda x: x[:-5] + '.feather' if type(x) == str else x)
+        df['Nazwa pliku 2'] = df['Nazwa pliku 2'].apply(lambda x: x[:-5] + '.feather' if type(x) == str else x)
+        df.to_feather(DATES_FILE)
 
 def get_verified_data() -> List[str]:
     filenames = [Path(VERIFIED_DIR, file) for file in os.listdir(VERIFIED_DIR) if os.path.isfile(Path(VERIFIED_DIR, file))]
