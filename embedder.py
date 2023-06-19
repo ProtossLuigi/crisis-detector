@@ -51,7 +51,7 @@ class TextEmbedder(pl.LightningModule):
             x = args[0]
         else:
             x = kwargs
-        return self.model(input_ids=x['input_ids'], attention_mask=x['attention_mask'])[1]
+        return self.model(input_ids=x['input_ids'], attention_mask=x['attention_mask'])[0][:, 0]
     
     def training_step(self, batch, batch_idx):
         y_true = batch['label']
@@ -165,7 +165,7 @@ def main():
     deterministic = True
     end_to_end = False
     samples_limit = 1000
-    batch_size = 256
+    batch_size = 128
     max_epochs = 150
     
     TEXTS_PATH = 'saved_objects/texts_df' + str(samples_limit) + '.feather'
