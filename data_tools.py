@@ -36,7 +36,7 @@ def prepare_data(force: bool = False):
     for filepath in tqdm(filepaths):
         if filepath.with_suffix('').name in FILE_BLACKLIST or filepath.suffix != '.xlsx':
             continue
-        target_path = Path(DATA_DIR2, *filepath.with_suffix('.parquet').parts[1:])
+        target_path = Path(DATA_DIR2, *filepath.with_suffix('.feather').parts[1:])
         os.makedirs(target_path.parent, exist_ok=True)
         try:
             df = pd.read_excel(filepath)
@@ -70,7 +70,13 @@ def get_full_text_data() -> List[str]:
     return filenames
 
 def get_crisis_metadata(drop_nan_dates: bool = False) -> pd.DataFrame:
-    df = pd.read_feather(DATES_FILE).drop(columns=['Unnamed: 0'])
+    df = pd.read_feather(DATES_FILE)
+    if 'Unnamed: 0' in df.columns:
+        df = df.drop(columns=['Unnamed: 0'])
+    elif '' in df.columns:
+        df = df.drop(columns=[''])
+    if len(df['Baza'].astype(bool).unique()) == 1:
+        df['Baza'] = df['Baza'] == 'TRUE'
     df = df[df['Baza']].drop(columns=['Baza'])
     if drop_nan_dates:
         df = df[df['Data wybuchu kryzysu'].notna()].reset_index(drop=True)
