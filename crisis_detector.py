@@ -603,7 +603,7 @@ def get_predictions(model: MyClassifier, ds: Dataset, num_workers: int = 10, pre
 
 def main():
     deterministic = True
-    end_to_end = True
+    end_to_end = False
     text_samples = 50
 
     if deterministic:
@@ -628,7 +628,7 @@ def main():
         text_df = pd.read_feather(POSTS_DF_PATH)
 
     if end_to_end or not os.path.isfile(EMBEDDINGS_PATH):
-        model = TextEmbedder.load_from_checkpoint('saved_objects/finetuned_distilroberta.ckpt')
+        model = TextEmbedder.load_from_checkpoint('saved_objects/pretrained_herbert.ckpt')
         tokenizer = AutoTokenizer.from_pretrained(model.pretrained_name)
         ds = SeriesDataset(text_df['text'])
         collate_fn = lambda x: tokenizer(x, truncation=True, padding=True, max_length=256, return_tensors='pt')

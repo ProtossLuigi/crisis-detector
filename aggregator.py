@@ -361,7 +361,7 @@ def cross_validate(
 
 def main():
     deterministic = True
-    end_to_end = True
+    end_to_end = False
     sample_size = 50
     batch_size = 512
     padding = False
@@ -384,7 +384,7 @@ def main():
         posts_df = pd.read_feather(TEXTS_PATH)
     
     if end_to_end or not os.path.isfile(EMBEDDINGS_PATH):
-        embedder = TextEmbedder.load_from_checkpoint('saved_objects/finetuned_distilroberta.ckpt')
+        embedder = TextEmbedder.load_from_checkpoint('saved_objects/pretrained_herbert.ckpt')
         tokenizer = AutoTokenizer.from_pretrained(embedder.pretrained_name)
         ds = SeriesDataset(posts_df['text'])
         collate_fn = lambda x: tokenizer(x, truncation=True, padding=True, max_length=256, return_tensors='pt')
