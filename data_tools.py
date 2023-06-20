@@ -219,7 +219,7 @@ def extract_text_data(
         samples_limit: int | None = None,
         drop_invalid: bool = False
 ) -> pd.DataFrame | None:
-    src_df = pd.read_excel(filename)
+    src_df = pd.read_feather(filename)
 
     if type(window_size) == int:
         window_size = (window_size, window_size)
@@ -245,7 +245,11 @@ def extract_text_data(
 
     text = src_df.apply(lambda x: " . ".join([str(x['Tytuł publikacji']), str(x['Lead']), str(x['Kontekst publikacji'])]), axis=1)
     text_df = pd.DataFrame({'text': text, 'label': labels})
-    sample_size = text_df['label'].value_counts().min()
+    counts = text_df['label'].value_counts()
+    if len(counts) < 2:
+        sample_size = 0
+    else:
+        sample_size = counts.min()
     if samples_limit is not None:
         sample_size = min(sample_size, samples_limit // 2)
     text_df = pd.concat((text_df[text_df['label']].sample(sample_size), text_df[~text_df['label']].sample(sample_size))).sort_index().reset_index(drop=True)
