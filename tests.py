@@ -18,7 +18,6 @@ def triple_training():
     samples_limit = 1000
     embedder_training_batch_size = 128
     aggregator_training_batch_size = 512
-    max_epochs = 150
     day_post_sample_size = 50
     padding = False
     
@@ -57,9 +56,9 @@ def triple_training():
     
     groups = torch.tensor(posts_df['group'].values)
 
-    embedder_model = embedder.TextEmbedder(pretrained_name, max_epochs=max_epochs)
+    embedder_model = embedder.TextEmbedder(pretrained_name)
     tokenizer = AutoTokenizer.from_pretrained(embedder_model.pretrained_name)
-    embedder.train_test(embedder_model, ds, groups, embedder_training_batch_size, max_epochs=max_epochs, deterministic=deterministic)
+    embedder.train_test(embedder_model, ds, groups, embedder_training_batch_size, max_epochs=150, deterministic=deterministic)
 
     if deterministic:
         seed_everything(42)
@@ -93,7 +92,7 @@ def triple_training():
     
     ds, groups = aggregator.create_dataset(posts_df, embeddings, .02, day_post_sample_size, aggregator_training_batch_size > 0, padding, balance_classes=True)
     aggregator_model = aggregator.TransformerAggregator(sample_size=day_post_sample_size)
-    aggregator.train_test(aggregator_model, ds, groups, batch_size=aggregator_training_batch_size, max_epochs=100, deterministic=deterministic)
+    aggregator.train_test(aggregator_model, ds, groups, batch_size=aggregator_training_batch_size, max_epochs=150, deterministic=deterministic)
 
     if deterministic:
         seed_everything(42, workers=True)
