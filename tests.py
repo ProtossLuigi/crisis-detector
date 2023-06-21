@@ -65,7 +65,7 @@ def triple_training():
 
     if end_to_end or not os.path.isfile(TEXTS2_PATH):
         dates = get_data_with_dates(get_verified_data())
-        posts_df = load_data(dates['path'], dates['crisis_start'], drop_invalid=True)
+        posts_df = aggregator.load_data(dates['path'], dates['crisis_start'], drop_invalid=True)
         posts_df.to_feather(TEXTS2_PATH)
 
         if deterministic:
@@ -93,6 +93,11 @@ def triple_training():
     ds, groups = aggregator.create_dataset(posts_df, embeddings, .02, day_post_sample_size, aggregator_training_batch_size > 0, padding, balance_classes=True)
     aggregator_model = aggregator.TransformerAggregator(sample_size=day_post_sample_size)
     aggregator.train_test(aggregator_model, ds, groups, batch_size=aggregator_training_batch_size, max_epochs=150, deterministic=deterministic)
+
+    posts_df = None
+    ds = None
+    dl = None
+    embeddings = None
 
     if deterministic:
         seed_everything(42, workers=True)
