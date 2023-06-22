@@ -375,12 +375,9 @@ def main():
     INPUT_IDS_PATH = 'saved_objects/input_ids' + str(text_samples) + '.pt'
     ATTENTION_MASK_PATH = 'saved_objects/attention_mask' + str(text_samples) + '.pt'
     
-    # embedder = TextEmbedder.load_from_checkpoint('saved_objects/finetuned_distilroberta.ckpt')
-    # aggregator = TransformerAggregator.load_from_checkpoint('saved_objects/pretrained_aggregator.ckpt')
-    aggregator = MeanAggregator(sample_size=text_samples)
-    # detector = MyTransformer.load_from_checkpoint('saved_objects/pretrained_detector_distilroberta.ckpt')
-    embedder = TextEmbedder('sdadas/polish-distilroberta')
-    detector = MyTransformer()
+    embedder = TextEmbedder.load_from_checkpoint('saved_objects/pretrained_herbert.ckpt')
+    aggregator = TransformerAggregator.load_from_checkpoint('saved_objects/pretrained_aggregator.ckpt')
+    detector = MyTransformer.load_from_checkpoint('saved_objects/pretrained_detector.ckpt')
 
     if end_to_end or not (os.path.isfile(DAYS_DF_PATH) and os.path.isfile(POSTS_DF_PATH)):
 

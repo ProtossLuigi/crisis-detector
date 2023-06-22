@@ -78,7 +78,7 @@ def triple_training():
         collate_fn = lambda x: tokenizer(x, truncation=True, padding=True, max_length=256, return_tensors='pt')
         dl = DataLoader(ds, 128, num_workers=10, collate_fn=collate_fn, pin_memory=True)
         trainer = pl.Trainer(devices=1, precision='bf16-mixed', logger=False, deterministic=deterministic)
-        embeddings = trainer.predict(embedder, dl)
+        embeddings = trainer.predict(embedder_model, dl)
         embeddings = torch.cat(embeddings, dim=0)
 
         with open(EMBEDDINGS_PATH, 'wb') as f:
