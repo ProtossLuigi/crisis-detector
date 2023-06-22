@@ -223,6 +223,47 @@ class TransformerAggregator(EmbeddingAggregator):
         # x = self.positional_encoding(x)
         return self.transformer(x).mean(dim=1)
 
+class MaskedAggregator(EmbeddingAggregator):
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
+        if self.sample_size < 1:
+            raise ValueError('Sample size must be greater than 0.')
+        
+        self.mlp1 = nn.Sequential(
+            nn.Linear(self.embedding_dim, self.embedding_dim),
+            nn.Dropout(.1),
+            nn.PReLU(),
+            # nn.Linear(self.embedding_dim, self.embedding_dim),
+            # nn.Dropout(),
+            # nn.PReLU(),
+            nn.Linear(self.embedding_dim, self.embedding_dim),
+            nn.Sigmoid()
+        )
+
+        self.mlp2 = nn.Sequential(
+            nn.Linear(self.sample_size, self.sample_size),
+            nn.Dropout(.1),
+            nn.RReLU(),
+            # nn.Linear(self.sample_size, self.sample_size),
+            # nn.Dropout(),
+            # nn.PReLU(),
+            nn.Linear(self.sample_size, self.sample_size),
+            nn.Softmax()
+        )
+
+        self.mlp3 = nn.Sequential(
+            nn.Linear(self.embedding_dim, self.embedding_dim),
+            nn.Dropout(),
+            nn.Tanh(),
+            nn.Linear(self.embedding_dim, self.embedding_dim),
+            nn.Tanh()
+        )
+    
+    def forward(self, x) -> Any:
+        embedding_mask = self.mlp1(x.flatten(0, 1)).view(x.shape)
+        sample_mask = self.mlp2(x.mT.flatten(0, 1)).view(x.shape[0], x.shape[2], x.shape[1]).mT
+        return self.mlp3((embedding_mask * sample_mask * x).mean(dim=1))
+
 def extract_data(
         filename: str,
         crisis_start: pd.Timestamp,
@@ -403,7 +444,7 @@ def main():
             embeddings = torch.load(f)
     
     ds, groups = create_dataset(posts_df, embeddings, .02, sample_size, batch_size > 0, padding, balance_classes=True)
-    model = TransformerAggregator(sample_size=sample_size)
+    model = MaskedAggregator(sample_size=sample_size)
     train_test(model, ds, groups, batch_size=batch_size, max_epochs=100, deterministic=deterministic)
     
     # cross_validate(MeanAggregator, {'sample_size': sample_size}, ds, groups, True, 5, batch_size=batch_size, num_workers=10, deterministic=deterministic)
