@@ -244,7 +244,7 @@ def extract_text_data(
         labels = src_df['Kryzys'] != 'NIE'
 
     text = src_df.apply(lambda x: " . ".join([str(x['Tytuł publikacji']), str(x['Lead']), str(x['Kontekst publikacji'])]), axis=1)
-    text_df = pd.DataFrame({'text': text, 'label': labels})
+    text_df = pd.DataFrame({'text': text, 'label': labels, 'time': src_df['Data i godzina dodania'], 'sentiment': src_df['Wydźwięk']})
     counts = text_df['label'].value_counts()
     if len(counts) < 2:
         sample_size = 0
@@ -252,9 +252,9 @@ def extract_text_data(
         sample_size = counts.min()
     if samples_limit is not None:
         sample_size = min(sample_size, samples_limit // 2)
-    text_df = pd.concat((text_df[text_df['label']].sample(sample_size), text_df[~text_df['label']].sample(sample_size))).sort_index().reset_index(drop=True)
+    text_df = pd.concat((text_df[text_df['label']].sample(sample_size), text_df[~text_df['label']].sample(sample_size))).sort_index(ignore_index=True)
     
-    return text_df
+    return text_df.sort_values(by='time', ignore_index=True)
 
 def load_text_data(filenames: Iterable[str], crisis_dates: Iterable[pd.Timestamp], samples_limit: int | None = None, drop_invalid: bool = False) -> pd.DataFrame:
     assert len(filenames) == len(crisis_dates)
