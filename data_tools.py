@@ -253,10 +253,11 @@ def extract_text_data(
     if samples_limit is not None:
         sample_size = min(sample_size, samples_limit // 2)
     text_df = pd.concat((text_df[text_df['label']].sample(sample_size), text_df[~text_df['label']].sample(sample_size))).sort_index(ignore_index=True)
+    text_df['time_label'] = text_df['time'] >= crisis_start
     
     return text_df.sort_values(by='time', ignore_index=True)
 
-def load_text_data(filenames: Iterable[str], crisis_dates: Iterable[pd.Timestamp], samples_limit: int | None = None, drop_invalid: bool = False) -> pd.DataFrame:
+def load_text_data(filenames: Iterable[str], crisis_dates: Iterable[pd.Timestamp], samples_limit: int | None = None, drop_invalid: bool = False, window_size: int | Tuple[int, int] | None = 30) -> pd.DataFrame:
     assert len(filenames) == len(crisis_dates)
     dfs = []
     for i, (fname, date) in enumerate(tqdm(zip(filenames, crisis_dates), total=len(filenames))):
