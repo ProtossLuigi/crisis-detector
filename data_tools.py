@@ -257,7 +257,7 @@ def extract_text_data(
     
     return text_df.sort_values(by='time', ignore_index=True)
 
-def load_text_data(filenames: Iterable[str], crisis_dates: Iterable[pd.Timestamp], samples_limit: int | None = None, drop_invalid: bool = False, window_size: int | Tuple[int, int] | None = 30) -> pd.DataFrame:
+def load_text_data(filenames: Iterable[str], crisis_dates: Iterable[pd.Timestamp], samples_limit: int | None = None, drop_invalid: bool = False) -> pd.DataFrame:
     assert len(filenames) == len(crisis_dates)
     dfs = []
     for i, (fname, date) in enumerate(tqdm(zip(filenames, crisis_dates), total=len(filenames))):

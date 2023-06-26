@@ -49,7 +49,15 @@ def fold_dataset(ds: Dataset, groups: torch.Tensor, n_splits: int = 10, validate
     else:
         return [(Subset(ds, train_idx), Subset(ds, test_idx)) for train_idx, test_idx in splits]
 
-def init_trainer(precision: str = 'bf16-mixed', early_stopping: bool = True, logging: dict | None = None, max_epochs: int = -1, max_time = None, verbose: bool = True, deterministic: bool = False
+def init_trainer(
+        precision: str = 'bf16-mixed', 
+        early_stopping: bool = True, 
+        logging: dict | None = None, 
+        max_epochs: int = -1, 
+        max_time = None, 
+        verbose: bool = True, 
+        accumulate_grad_batches: int = 1,
+        deterministic: bool = False
 ) -> pl.Trainer:
     checkpoint_callback = ModelCheckpoint(
         monitor='val_loss',
@@ -73,6 +81,7 @@ def init_trainer(precision: str = 'bf16-mixed', early_stopping: bool = True, log
         max_epochs=max_epochs,
         max_time=max_time,
         enable_model_summary=verbose,
+        accumulate_grad_batches=accumulate_grad_batches,
         deterministic=deterministic
     )
     return trainer
