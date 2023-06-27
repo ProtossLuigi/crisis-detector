@@ -27,6 +27,7 @@ class PostDetector(pl.LightningModule):
             train_dataloader_len: int | None = None,
             warmup_proportion: float = .1,
             max_epochs: int | None = None,
+            class_ratios: torch.Tensor | None = None,
             *args: Any, 
             **kwargs: Any
     ) -> None:
@@ -47,9 +48,13 @@ class PostDetector(pl.LightningModule):
         self.shift = ShiftMetric()
         self.shift2 = Shift2Metric()
 
-        self.loss_fn = nn.CrossEntropyLoss()
+        self.init_loss_fn(class_ratios)
 
         self.save_hyperparameters()
+    
+    def init_loss_fn(self, class_ratios: torch.Tensor | None = None) -> None:
+        self.class_weights = .5 / class_ratios if class_ratios is not None else None
+        self.loss_fn = nn.CrossEntropyLoss(self.class_weights)
     
     def forward(self, timestamps, input_ids, attention_mask, features = None) -> Any:
         tvec = self.time_vectorizer(timestamps)
@@ -199,6 +204,7 @@ def create_dataset(
         text_length: int = 256, 
         batch_size: int = 128, 
         window_size: int | Tuple[int, int] | None = None, 
+        sequence_step: int = 1
 ):
     if window_size is None:
         window_size = (sequence_len * 2 - 1, sequence_len)
@@ -247,7 +253,7 @@ def create_dataset(
         attention_mask_g = attention_mask[selector]
         features_g = features[selector]
         labels_g = labels[selector]
-        for i in range(labels_g.shape[0] - sequence_len + 1):
+        for i in range(0, labels_g.shape[0] - sequence_len + 1, sequence_step):
             times_seq.append(times_g[i:i+sequence_len])
             input_ids_seq.append(input_ids_g[i:i+sequence_len])
             attention_mask_seq.append(attention_mask_g[i:i+sequence_len])
@@ -273,23 +279,28 @@ def train_test(
         logging={'name': 'crisis-detector-v2', 'project': 'crisis-detector'}, 
         max_epochs=max_epochs, 
         max_time=max_time, 
-        accumulate_grad_batches=4,
+        accumulate_grad_batches=16,
         deterministic=deterministic
     )
     train_ds, test_ds, val_ds = split_dataset(ds, groups, n_splits=10, validate=True)
     train_dl = DataLoader(train_ds, batch_size, shuffle=True, num_workers=10, pin_memory=True)
     val_dl = DataLoader(val_ds, batch_size, shuffle=False, num_workers=10, pin_memory=True)
-    test_dl = DataLoader(test_ds, batch_size, shuffle=False, num_workers=10, pin_memory=True)
+    test_dl = DataLoader(test_ds, batch_size, shuffle=False, num_workers=1, pin_memory=True)
+    class_ratios = train_ds[:][-1].unique(return_counts=True)[-1] / len(train_ds)
+    print(class_ratios)
+    model.init_loss_fn(class_ratios)
     model.train_dataloader_len = len(train_dl)
     model.max_epochs = max_epochs
     trainer.fit(model, train_dl, val_dl) 
     trainer.test(model, test_dl, 'best')
 
 def main():
+    os.environ['TOKENIZERS_PARALLELISM'] = 'false'
+
     deterministic = True
-    end_to_end = False
-    samples_limit = 1000
-    batch_size = 2
+    end_to_end = True
+    samples_limit = None
+    batch_size = 1
     max_epochs = 100
     
     TEXTS_PATH = 'saved_objects/texts_df' + str(samples_limit) + '.feather'
@@ -312,7 +323,7 @@ def main():
     else:
         posts_df = pd.read_feather(TEXTS_PATH)
     
-    ds, groups = create_dataset(posts_df, embedder.pretrained_name)
+    ds, groups = create_dataset(posts_df, embedder.pretrained_name, sequence_len=100, sequence_step=5)
 
     model = PostDetector(time_vectorizer, embedder, classifier)
     train_test(model, ds, groups, batch_size, '16-mixed', max_epochs=max_epochs, deterministic=deterministic)
