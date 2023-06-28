@@ -2,6 +2,7 @@ import os
 from typing import Any, Tuple
 import pandas as pd
 from tqdm import tqdm
+from math import ceil
 
 import torch
 from torch import nn
@@ -156,7 +157,7 @@ class PostDetector(pl.LightningModule):
 
     def configure_optimizers(self):
         optimizer = torch.optim.Adam([
-            {'params': self.embedder.parameters(), 'lr': 1e-5},
+            # {'params': self.embedder.parameters(), 'lr': 1e-5},
             {'params': self.time_vectorizer.parameters(), 'lr': 1e-3},
             {'params': self.classifier.parameters(), 'lr': 1e-3}
         ], weight_decay=.01)
@@ -204,7 +205,8 @@ def create_dataset(
         text_length: int = 256, 
         batch_size: int = 128, 
         window_size: int | Tuple[int, int] | None = None, 
-        sequence_step: int = 1
+        sequence_step: int = 1,
+        balance_classes: bool = False
 ):
     if window_size is None:
         window_size = (sequence_len * 2 - 1, sequence_len)
@@ -217,7 +219,7 @@ def create_dataset(
     texts = df['text']
     input_ids = []
     attention_mask = []
-    for i in range(0, len(texts), batch_size):
+    for i in tqdm(range(0, len(texts), batch_size), desc='Tokenizing'):
         batch = texts[i:i+batch_size].to_list()
         tokens = tokenizer(batch, truncation=True, padding='max_length', max_length=text_length, return_tensors='pt')
         input_ids.append(tokens['input_ids'])
@@ -243,9 +245,16 @@ def create_dataset(
     labels_seq = []
     groups_seq = []
 
-    for g in tqdm(groups.unique()):
+    for g in tqdm(groups.unique(), desc='Generating sequences'):
         selector0 = ((groups == g) & ~labels).nonzero().flatten()[-window_size[0]:]
         selector1 = ((groups == g) & labels).nonzero().flatten()[:window_size[1]]
+        if balance_classes:
+            selector_len = min(len(selector0) - sequence_len + 1, len(selector1))
+            if ceil(2 * selector_len / sequence_step) % 2 == 1:
+                target_seq_num = ceil(2 * selector_len / sequence_step) - 1
+                selector_len = target_seq_num * sequence_step // 2
+            selector0 = selector0[-(2 * selector_len - 1):]
+            selector1 = selector1[:selector_len]
         selector = torch.zeros_like(labels, dtype=bool)
         selector[torch.cat((selector0, selector1))] = True
         times_g = times[selector]
@@ -323,7 +332,7 @@ def main():
     else:
         posts_df = pd.read_feather(TEXTS_PATH)
     
-    ds, groups = create_dataset(posts_df, embedder.pretrained_name, sequence_len=100, sequence_step=5)
+    ds, groups = create_dataset(posts_df, embedder.pretrained_name, sequence_len=100, sequence_step=5, balance_classes=True)
 
     model = PostDetector(time_vectorizer, embedder, classifier)
     train_test(model, ds, groups, batch_size, '16-mixed', max_epochs=max_epochs, deterministic=deterministic)
