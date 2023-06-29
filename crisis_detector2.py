@@ -157,7 +157,7 @@ class PostDetector(pl.LightningModule):
 
     def configure_optimizers(self):
         optimizer = torch.optim.Adam([
-            # {'params': self.embedder.parameters(), 'lr': 1e-5},
+            {'params': self.embedder.parameters(), 'lr': 1e-5},
             {'params': self.time_vectorizer.parameters(), 'lr': 1e-3},
             {'params': self.classifier.parameters(), 'lr': 1e-3}
         ], weight_decay=.01)
@@ -213,7 +213,11 @@ def create_dataset(
     elif type(window_size) == int:
         window_size = (window_size + sequence_len - 1, window_size)
 
-    times = torch.tensor(df['time'].apply(lambda x: x.timetuple()[:6]), dtype=torch.float32)
+    df = df[df['impact']]
+
+    # print(df['time'].apply(lambda x: x.timetuple()[:6]).values)
+
+    times = torch.tensor(df['time'].apply(lambda x: x.timetuple()[:6]).to_list(), dtype=torch.float32)
 
     tokenizer = AutoTokenizer.from_pretrained(tokenizer_name)
     texts = df['text']
@@ -235,7 +239,7 @@ def create_dataset(
     sentiment_data = torch.tensor(sentiment_data.values, dtype=torch.float32)
     features = sentiment_data
 
-    labels = torch.tensor(df['time_label'], dtype=torch.long)
+    labels = torch.tensor(df['time_label'].values, dtype=torch.long)
     groups = torch.tensor(df['group'].values)
 
     times_seq = []

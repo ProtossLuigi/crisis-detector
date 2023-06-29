@@ -245,6 +245,7 @@ def extract_text_data(
 
     text = src_df.apply(lambda x: " . ".join([str(x['Tytuł publikacji']), str(x['Lead']), str(x['Kontekst publikacji'])]), axis=1)
     text_df = pd.DataFrame({'text': text, 'label': labels, 'time': src_df['Data i godzina dodania'], 'sentiment': src_df['Wydźwięk']})
+    text_df['impact'] = src_df['Zasięg (egz.), (słuchaczy), (widzów), (UU), (subskrybentów), (obserwujących)'] > np.quantile(src_df['Zasięg (egz.), (słuchaczy), (widzów), (UU), (subskrybentów), (obserwujących)'], .5)
     counts = text_df['label'].value_counts()
     if len(counts) < 2:
         sample_size = 0
