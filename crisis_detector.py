@@ -49,7 +49,7 @@ def add_embeddings(
     days_df.loc[:, 'embedding'].iloc[days_df['embedding'].isna()] = pd.Series(np.zeros((days_df['embedding'].isna().sum(), embedding_len)).tolist())
     return days_df
 
-def create_dataset(df: pd.DataFrame, sequence_len: int = 30) -> Tuple[TensorDataset, torch.Tensor]:
+def create_dataset(df: pd.DataFrame, sequence_len: int = 30, loss_multiplier: Tuple[torch.Tensor] | None = None) -> Tuple[TensorDataset, torch.Tensor]:
     numeric_cols = ['brak', 'pozytywny', 'neutralny', 'negatywny', 'suma']
     X = torch.tensor(df[numeric_cols].values, dtype=torch.long)
     y = torch.tensor(df['label'], dtype=torch.long)
@@ -73,19 +73,26 @@ def create_dataset(df: pd.DataFrame, sequence_len: int = 30) -> Tuple[TensorData
     
     X = torch.cat((torch.cat(new_features, dim=0), embeddings), dim=1).to(torch.float32)
 
-    X_seq, y_seq, groups_seq = [], [], []
+    X_seq, y_seq, groups_seq, multiplier_seq = [], [], [], []
     for i in groups.unique():
         X_i = X[groups == i]
         y_i = y[groups == i]
+        if loss_multiplier is None:
+            multiplier_i = torch.ones_like(y_i, dtype=torch.float32)
+        else:
+            crisis_start = torch.diff(y_i, prepend=torch.tensor([0], dtype=y_i.dtype)).nonzero().flatten()[0]
+            multiplier_i = torch.cat((loss_multiplier[0][-crisis_start:], loss_multiplier[1][:len(y_i) - crisis_start]))
         for j in range(X_i.shape[0] - sequence_len + 1):
             X_seq.append(X_i[j:j+sequence_len])
             y_seq.append(y_i[j+sequence_len-1])
+            multiplier_seq.append(multiplier_i[j+sequence_len-1])
             groups_seq.append(i)
     X_seq = torch.stack(X_seq)
     y_seq = torch.stack(y_seq)
+    multiplier_seq = torch.tensor(multiplier_seq)
     groups_seq = torch.tensor(groups_seq)
 
-    return TensorDataset(X_seq, y_seq), groups_seq
+    return TensorDataset(X_seq, y_seq, multiplier_seq), groups_seq
 
 def error_if_multiprocess(x: torch.Tensor):
     if len(x.shape[0]) == 1:
@@ -255,27 +262,27 @@ class MyClassifier(pl.LightningModule):
     
     def init_loss_fn(self, class_ratios: torch.Tensor | None = None) -> None:
         self.class_weights = .5 / class_ratios if class_ratios else None
-        self.loss_fn = nn.CrossEntropyLoss(self.class_weights)
+        self.loss_fn = nn.CrossEntropyLoss(self.class_weights, reduction='none')
     
     def forward(self, x):
         raise NotImplementedError()
 
     def training_step(self, batch, batch_idx):
         if type(batch) == tuple or type(batch) == list:
-            X, y = batch
+            X, y, loss_m = batch
         elif type(batch) == dict:
             X, y = batch, batch['label']
         else:
             raise TypeError(f'Invalid batch type {type(batch)}. Expected tuple, list or dict.')
         y_pred = self(X)
-        loss = self.loss_fn(y_pred, y)
+        loss = (self.loss_fn(y_pred, y) * loss_m).mean()
         self.log('train_loss', loss, on_epoch=True)
         return loss
 
     @torch.no_grad()
     def validation_step(self, batch, batch_idx):
         if type(batch) == tuple or type(batch) == list:
-            X, y = batch
+            X, y, loss_m = batch
         elif type(batch) == dict:
             X, y = batch, batch['label']
         else:
@@ -283,7 +290,7 @@ class MyClassifier(pl.LightningModule):
         y_pred = self(X)
         self.acc.update(torch.argmax(y_pred, -1), y)
         self.f1.update(torch.argmax(y_pred, -1), y)
-        self.log('val_loss', self.loss_fn(y_pred, y), on_epoch=True)
+        self.log('val_loss', (self.loss_fn(y_pred, y) * loss_m).mean(), on_epoch=True)
 
     def on_validation_epoch_end(self) -> None:
         metrics = {
@@ -297,7 +304,7 @@ class MyClassifier(pl.LightningModule):
     @torch.no_grad()
     def test_step(self, batch, batch_idx):
         if type(batch) == tuple or type(batch) == list:
-            X, y = batch
+            X, y, loss_m = batch
         elif type(batch) == dict:
             X, y = batch, batch['label']
         else:
@@ -312,7 +319,7 @@ class MyClassifier(pl.LightningModule):
         self.rec.update(torch.argmax(y_pred, -1), y)
         self.shift.update(torch.argmax(y_pred, -1), y)
         self.shift2.update(torch.argmax(y_pred, -1), y)
-        self.log('test_loss', self.loss_fn(y_pred, y), on_epoch=True)
+        self.log('test_loss', (self.loss_fn(y_pred, y) * loss_m).mean(), on_epoch=True)
     
     def on_test_epoch_end(self) -> None:
         metrics = {
@@ -492,7 +499,7 @@ def cross_validate(
         n_splits: int = 10,
         precision: str = 'bf16-mixed',
         batch_size: int = 512,
-        max_epochs: int = -1,
+        max_epochs: int = 100,
         max_time = None,
         num_workers: int = 10,
         deterministic: bool = False,
@@ -510,10 +517,14 @@ def cross_validate(
             class_ratio = train_ds[:][1].unique(return_counts=True)[1] / len(train_ds)
             model.init_loss_fn(class_ratio)
 
-        trainer = train_model(model, train_ds, val_ds, precision, batch_size, max_epochs, max_time, num_workers, False, deterministic)
-
-        test_dl = DataLoader(test_ds, batch_sampler=TopicSampler(SequentialSampler(test_ds)), num_workers=num_workers, pin_memory=True)
-        test_results = trainer.test(dataloaders=test_dl, ckpt_path='best', verbose=False)[0]
+        trainer = init_trainer(precision, early_stopping=True, logging=None, max_epochs=max_epochs, max_time=max_time, verbose=False, deterministic=deterministic)
+        train_dl = DataLoader(train_ds, batch_size, shuffle=True, num_workers=num_workers, pin_memory=True)
+        val_dl = DataLoader(val_ds, batch_size, shuffle=False, num_workers=num_workers, pin_memory=True)
+        test_dl = DataLoader(test_ds, batch_size, shuffle=False, num_workers=1, pin_memory=True)
+        model.train_dataloader_len = len(train_dl)
+        model.max_epochs = max_epochs
+        trainer.fit(model, train_dl, val_dl) 
+        test_results = trainer.test(model, test_dl, 'best', verbose=False)[0]
         stats.append(test_results)
 
         if topic_names is not None:
@@ -663,9 +674,9 @@ def main():
         seed_everything(42, workers=True)
     
     model = MyTransformer(print_test_samples=True)
-    train_test(model, ds, groups, batch_size=512, max_epochs=150, deterministic=deterministic)
+    # train_test(model, ds, groups, batch_size=512, max_epochs=150, deterministic=deterministic)
 
-    # stats = cross_validate(MyTransformer(input_dim=ds[0][0].shape[-1]), ds, groups, n_splits=5, precision='bf16-mixed', deterministic=deterministic)
+    stats = cross_validate(MyTransformer(), ds, groups, n_splits=5, precision='bf16-mixed', deterministic=deterministic)
     # df.to_feather('saved_objects/predictions.feather')
 
 if __name__ == '__main__':

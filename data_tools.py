@@ -110,7 +110,8 @@ def extract_data(
         num_samples: int = 0,
         window_size: int | Tuple[int, int] | None = (59, 30),
         drop_invalid: bool = False,
-        class_balance: float | None = None
+        class_balance: float | None = None,
+        impact_factor: torch.Tensor | None = None
 ) -> Tuple[pd.DataFrame, pd.DataFrame] | None:
     src_df = pd.read_feather(filename).sort_values('Data wydania', ignore_index=True)
     
@@ -189,14 +190,14 @@ def extract_data(
     return df, text_df
 
 def load_data(
-        metadata: pd.DataFrame, num_samples: int = 0, drop_invalid: bool = False, class_balance: float | None = None, window_size: int | Tuple[int, int] | None = (59, 30)
+        metadata: pd.DataFrame, num_samples: int = 0, drop_invalid: bool = False, class_balance: float | None = None, window_size: int | Tuple[int, int] | None = (59, 30), impact_factor: torch.Tensor | None = None
 ) -> Tuple[pd.DataFrame, pd.DataFrame]:
     if 'crisis_start' not in metadata.columns:
         metadata['crisis_start'] = None
     dfs, text_dfs = [], []
     for i, row in enumerate(tqdm(metadata.itertuples(), total=len(metadata))):
         try:
-            dfp = extract_data(row.path, row.crisis_start, num_samples, drop_invalid=drop_invalid, class_balance=class_balance, window_size=window_size)
+            dfp = extract_data(row.path, row.crisis_start, num_samples, drop_invalid=drop_invalid, class_balance=class_balance, window_size=window_size, impact_factor=impact_factor)
             if dfp is None:
                 continue
         except KeyError as e:
