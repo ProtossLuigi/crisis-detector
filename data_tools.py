@@ -12,18 +12,12 @@ from torch.utils.data import Dataset
 
 DATA_DIR = 'dane'
 DATA_DIR2 = 'data'
-VERIFIED_DIR = 'data/Etap I - zweryfikowane szeregi'
-FULL_TEXT_DIR = 'data/Bazy - pełne treści publikacji'
+VERIFIED1_DIR = 'data/Etap I - bazy/Etap I - zweryfikowane szeregi'
+VERIFIED2_DIR = 'data/Etap I - bazy/Bazy - wersja ostateczna'
+FULL_TEXT_DIR = 'data/Etap I - bazy/Bazy - pełne treści publikacji'
 DATES_FILE = 'data/Crisis Detector.feather'
 
-FILE_BLACKLIST = [
-    'Daty_kryzysów',
-    'Fake news_baza publikacji',
-    'Crisis Detector',
-    'Marian Banaś',
-    'Anna Lewandowska',
-    'Marian Banaś'
-]
+FILE_BLACKLIST = []
 
 def prepare_data(force: bool = False):
     if os.path.isdir(DATA_DIR2):
@@ -53,14 +47,20 @@ def prepare_data(force: bool = False):
         df['Nazwa pliku 2'] = df['Nazwa pliku 2'].apply(lambda x: x[:-5] + '.feather' if type(x) == str else x)
         df.to_feather(DATES_FILE)
 
-def get_verified_data() -> List[str]:
-    filenames = [Path(VERIFIED_DIR, file) for file in os.listdir(VERIFIED_DIR) if os.path.isfile(Path(VERIFIED_DIR, file))]
+def get_verified_data(i: int = 1) -> List[str]:
+    if i == 1:
+        dirpath = VERIFIED1_DIR
+    elif i == 2:
+        dirpath = VERIFIED2_DIR
+    else:
+        raise ValueError('bruh')
+    filenames = [Path(dirpath, file) for file in os.listdir(dirpath) if os.path.isfile(Path(dirpath, file))]
     filenames = [fname for fname in filenames if fname.with_suffix('').name not in FILE_BLACKLIST]
     return filenames
 
 def get_all_data() -> List[str]:
-    filenames = [Path(DATA_DIR2, file) for file in os.listdir(DATA_DIR2) if os.path.isfile(Path(DATA_DIR2, file))]
-    filenames += [Path(VERIFIED_DIR, file) for file in os.listdir(VERIFIED_DIR) if os.path.isfile(Path(VERIFIED_DIR, file))]
+    filenames = [Path(VERIFIED1_DIR, file) for file in os.listdir(VERIFIED1_DIR) if os.path.isfile(Path(VERIFIED1_DIR, file))]
+    filenames += [Path(VERIFIED2_DIR, file) for file in os.listdir(VERIFIED2_DIR) if os.path.isfile(Path(VERIFIED2_DIR, file))]
     filenames = [fname for fname in filenames if fname.with_suffix('').name.replace("'","_") not in FILE_BLACKLIST]
     return filenames
 

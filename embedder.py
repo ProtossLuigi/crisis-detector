@@ -160,10 +160,14 @@ def train_test(
     model.max_epochs = max_epochs
     trainer.fit(model, train_dl, val_dl) 
     trainer.test(model, test_dl, 'best')
+    if trainer.logger is not None:
+        trainer.logger.experiment.finish()
 
 def main():
+    os.environ['TOKENIZERS_PARALLELISM'] = 'false'
+
     deterministic = True
-    end_to_end = False
+    end_to_end = True
     samples_limit = 1000
     batch_size = 128
     max_epochs = 150

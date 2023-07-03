@@ -13,8 +13,10 @@ import crisis_detector
 from data_tools import SeriesDataset, get_data_with_dates, get_verified_data, get_all_data, load_text_data, load_data
 
 def triple_training():
+    os.environ['TOKENIZERS_PARALLELISM'] = 'false'
+
     deterministic = True
-    end_to_end = False
+    end_to_end = True
     samples_limit = 1000
     embedder_training_batch_size = 128
     aggregator_training_batch_size = 512
@@ -36,7 +38,7 @@ def triple_training():
         seed_everything(42)
 
     if end_to_end or not os.path.isfile(TEXTS1_PATH):
-        dates = get_data_with_dates(get_verified_data())
+        dates = get_data_with_dates(get_verified_data(2))
         posts_df = load_text_data(dates['path'], dates['crisis_start'], samples_limit=samples_limit, drop_invalid=True)
         posts_df.to_feather(TEXTS1_PATH)
 
@@ -64,7 +66,7 @@ def triple_training():
         seed_everything(42)
 
     if end_to_end or not os.path.isfile(TEXTS2_PATH):
-        dates = get_data_with_dates(get_verified_data())
+        dates = get_data_with_dates(get_verified_data(2))
         posts_df = aggregator.load_data(dates['path'], dates['crisis_start'], drop_invalid=True)
         posts_df.to_feather(TEXTS2_PATH)
 
@@ -104,7 +106,7 @@ def triple_training():
 
     if end_to_end or not (os.path.isfile(DAYS_DF_PATH) and os.path.isfile(POSTS_DF_PATH)):
 
-        data = get_data_with_dates(get_all_data())
+        data = get_data_with_dates(get_verified_data(2))
 
         days_df, text_df = load_data(data, day_post_sample_size, True, None, (59, 30))
         days_df.to_feather(DAYS_DF_PATH)
@@ -121,7 +123,7 @@ def triple_training():
         collate_fn = lambda x: tokenizer(x, truncation=True, padding=True, max_length=256, return_tensors='pt')
         dl = DataLoader(ds, 64, num_workers=10, collate_fn=collate_fn, pin_memory=True)
         trainer = pl.Trainer(devices=1, precision='bf16-mixed', logger=False, deterministic=deterministic)
-        embeddings = trainer.predict(embedder_model, dl, ckpt_path='best')
+        embeddings = trainer.predict(embedder_model, dl)
         embeddings = torch.cat(embeddings, dim=0)
 
         with open(EMBEDDINGS_PATH, 'wb') as f:

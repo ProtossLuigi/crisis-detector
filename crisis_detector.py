@@ -18,7 +18,7 @@ from transformers import AutoTokenizer, get_linear_schedule_with_warmup
 from sklearn.preprocessing import StandardScaler
 
 from embedder import TextEmbedder
-from data_tools import load_data, SimpleDataset, SeriesDataset, get_all_data, get_data_with_dates, get_full_text_data
+from data_tools import get_verified_data, load_data, SimpleDataset, SeriesDataset, get_all_data, get_data_with_dates, get_full_text_data
 from training_tools import split_dataset, train_model, test_model, fold_dataset, init_trainer
 from aggregator import EmbeddingAggregator, MeanAggregator, TransformerAggregator
 
@@ -32,7 +32,6 @@ def add_embeddings(
     embedding_len = embeddings.shape[1]
     sections = np.cumsum(text_df.groupby(['group', 'Data wydania']).count()['text']).tolist()[:-1]
     embeddings = torch.vsplit(embeddings, sections)
-    print(aggregator.sample_size)
     if aggregator.sample_size is not None:
         ds = TensorDataset(pad_sequence(embeddings, batch_first=True))
         # day_embeddings = aggregator.predict(pad_sequence(embeddings, batch_first=True)).detach().numpy()
@@ -73,26 +72,26 @@ def create_dataset(df: pd.DataFrame, sequence_len: int = 30, loss_multiplier: Tu
     
     X = torch.cat((torch.cat(new_features, dim=0), embeddings), dim=1).to(torch.float32)
 
-    X_seq, y_seq, groups_seq, multiplier_seq = [], [], [], []
+    X_seq, y_seq, groups_seq = [], [], []
     for i in groups.unique():
         X_i = X[groups == i]
         y_i = y[groups == i]
-        if loss_multiplier is None:
-            multiplier_i = torch.ones_like(y_i, dtype=torch.float32)
-        else:
-            crisis_start = torch.diff(y_i, prepend=torch.tensor([0], dtype=y_i.dtype)).nonzero().flatten()[0]
-            multiplier_i = torch.cat((loss_multiplier[0][-crisis_start:], loss_multiplier[1][:len(y_i) - crisis_start]))
+        # if loss_multiplier is None:
+        #     multiplier_i = torch.ones_like(y_i, dtype=torch.float32)
+        # else:
+        #     crisis_start = torch.diff(y_i, prepend=torch.tensor([0], dtype=y_i.dtype)).nonzero().flatten()[0]
+        #     multiplier_i = torch.cat((loss_multiplier[0][-crisis_start:], loss_multiplier[1][:len(y_i) - crisis_start]))
         for j in range(X_i.shape[0] - sequence_len + 1):
             X_seq.append(X_i[j:j+sequence_len])
             y_seq.append(y_i[j+sequence_len-1])
-            multiplier_seq.append(multiplier_i[j+sequence_len-1])
+            # multiplier_seq.append(multiplier_i[j+sequence_len-1])
             groups_seq.append(i)
     X_seq = torch.stack(X_seq)
     y_seq = torch.stack(y_seq)
-    multiplier_seq = torch.tensor(multiplier_seq)
+    # multiplier_seq = torch.tensor(multiplier_seq)
     groups_seq = torch.tensor(groups_seq)
 
-    return TensorDataset(X_seq, y_seq, multiplier_seq), groups_seq
+    return TensorDataset(X_seq, y_seq), groups_seq
 
 def error_if_multiprocess(x: torch.Tensor):
     if len(x.shape[0]) == 1:
@@ -262,27 +261,27 @@ class MyClassifier(pl.LightningModule):
     
     def init_loss_fn(self, class_ratios: torch.Tensor | None = None) -> None:
         self.class_weights = .5 / class_ratios if class_ratios else None
-        self.loss_fn = nn.CrossEntropyLoss(self.class_weights, reduction='none')
+        self.loss_fn = nn.CrossEntropyLoss(self.class_weights)
     
     def forward(self, x):
         raise NotImplementedError()
 
     def training_step(self, batch, batch_idx):
         if type(batch) == tuple or type(batch) == list:
-            X, y, loss_m = batch
+            X, y = batch
         elif type(batch) == dict:
             X, y = batch, batch['label']
         else:
             raise TypeError(f'Invalid batch type {type(batch)}. Expected tuple, list or dict.')
         y_pred = self(X)
-        loss = (self.loss_fn(y_pred, y) * loss_m).mean()
+        loss = self.loss_fn(y_pred, y)
         self.log('train_loss', loss, on_epoch=True)
         return loss
 
     @torch.no_grad()
     def validation_step(self, batch, batch_idx):
         if type(batch) == tuple or type(batch) == list:
-            X, y, loss_m = batch
+            X, y = batch
         elif type(batch) == dict:
             X, y = batch, batch['label']
         else:
@@ -290,7 +289,7 @@ class MyClassifier(pl.LightningModule):
         y_pred = self(X)
         self.acc.update(torch.argmax(y_pred, -1), y)
         self.f1.update(torch.argmax(y_pred, -1), y)
-        self.log('val_loss', (self.loss_fn(y_pred, y) * loss_m).mean(), on_epoch=True)
+        self.log('val_loss', self.loss_fn(y_pred, y), on_epoch=True)
 
     def on_validation_epoch_end(self) -> None:
         metrics = {
@@ -304,7 +303,7 @@ class MyClassifier(pl.LightningModule):
     @torch.no_grad()
     def test_step(self, batch, batch_idx):
         if type(batch) == tuple or type(batch) == list:
-            X, y, loss_m = batch
+            X, y = batch
         elif type(batch) == dict:
             X, y = batch, batch['label']
         else:
@@ -319,7 +318,7 @@ class MyClassifier(pl.LightningModule):
         self.rec.update(torch.argmax(y_pred, -1), y)
         self.shift.update(torch.argmax(y_pred, -1), y)
         self.shift2.update(torch.argmax(y_pred, -1), y)
-        self.log('test_loss', (self.loss_fn(y_pred, y) * loss_m).mean(), on_epoch=True)
+        self.log('test_loss', self.loss_fn(y_pred, y), on_epoch=True)
     
     def on_test_epoch_end(self) -> None:
         metrics = {
@@ -490,6 +489,8 @@ def train_test(
     model.max_epochs = max_epochs
     trainer.fit(model, train_dl, val_dl) 
     trainer.test(model, test_dl, 'best')
+    if trainer.logger is not None:
+        trainer.logger.experiment.finish()
 
 def cross_validate(
         model: MyClassifier,
@@ -614,7 +615,7 @@ def get_predictions(model: MyClassifier, ds: Dataset, num_workers: int = 10, pre
 
 def main():
     deterministic = True
-    end_to_end = False
+    end_to_end = True
     text_samples = 50
 
     if deterministic:
@@ -626,7 +627,7 @@ def main():
 
     if end_to_end or not (os.path.isfile(DAYS_DF_PATH) and os.path.isfile(POSTS_DF_PATH)):
 
-        data = get_data_with_dates(get_all_data())
+        data = get_data_with_dates(get_verified_data(1))
 
         days_df, text_df = load_data(data, text_samples, True, None, (59, 30))
         days_df.to_feather(DAYS_DF_PATH)
@@ -676,7 +677,7 @@ def main():
     model = MyTransformer(print_test_samples=True)
     # train_test(model, ds, groups, batch_size=512, max_epochs=150, deterministic=deterministic)
 
-    stats = cross_validate(MyTransformer(), ds, groups, n_splits=5, precision='bf16-mixed', deterministic=deterministic)
+    stats = cross_validate(MyTransformer(), ds, groups, n_splits=5, precision='bf16-mixed', max_epochs=150, deterministic=deterministic)
     # df.to_feather('saved_objects/predictions.feather')
 
 if __name__ == '__main__':

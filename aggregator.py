@@ -364,6 +364,8 @@ def train_test(
     model.max_epochs = max_epochs
     trainer.fit(model, train_dl, val_dl) 
     trainer.test(model, test_dl, 'best')
+    if trainer.logger is not None:
+        trainer.logger.experiment.finish()
 
 def cross_validate(
         model: EmbeddingAggregator,
