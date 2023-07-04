@@ -13,7 +13,7 @@ import torchmetrics
 from transformers import AutoModel, AutoConfig, AutoTokenizer, get_linear_schedule_with_warmup
 
 from data_tools import load_data, DictDataset, load_text_data, get_verified_data, get_data_with_dates
-from training_tools import split_dataset, init_trainer
+from training_tools import predefined_split, split_dataset, init_trainer
 
 torch.set_float32_matmul_precision('high')
 
@@ -149,10 +149,16 @@ def train_test(
         precision: str = 'bf16-mixed', 
         max_epochs: int = -1,
         max_time: Any | None = None, 
-        deterministic: bool = False
+        deterministic: bool = False,
+        predefined: bool | pd.DataFrame = False
 ):
     trainer = init_trainer(precision, early_stopping=True, logging={'name': 'embedder', 'project': 'crisis-detector'}, max_epochs=max_epochs, max_time=max_time, deterministic=deterministic)
-    train_ds, test_ds, val_ds = split_dataset(ds, groups, n_splits=10, validate=True)
+    if predefined == True:
+        train_ds, test_ds, val_ds = predefined_split(ds, groups)
+    elif predefined == False:
+        train_ds, test_ds, val_ds = split_dataset(ds, groups, n_splits=10, validate=True)
+    else:
+        train_ds, test_ds, val_ds = predefined_split(ds, groups, predefined=predefined)
     train_dl = DataLoader(train_ds, batch_size, shuffle=True, num_workers=10, pin_memory=True)
     val_dl = DataLoader(val_ds, batch_size, shuffle=False, num_workers=10, pin_memory=True)
     test_dl = DataLoader(test_ds, batch_size, shuffle=False, num_workers=10, pin_memory=True)

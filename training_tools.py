@@ -10,6 +10,8 @@ from lightning.pytorch.callbacks import ModelCheckpoint, EarlyStopping, Stochast
 from lightning.pytorch.loggers import WandbLogger
 from sklearn.model_selection import GroupKFold, StratifiedGroupKFold
 
+from data_tools import FOLD_FILE
+
 def split_dataset(ds: Dataset, groups: torch.Tensor, n_splits: int = 10, validate: bool = True, stratify: bool = False
 ) -> Tuple[Subset, Subset] | Tuple[Subset, Subset, Subset]:
     if stratify:
@@ -48,6 +50,36 @@ def fold_dataset(ds: Dataset, groups: torch.Tensor, n_splits: int = 10, validate
         return [(Subset(ds, t), Subset(ds, t2), Subset(ds, v)) for t, v, t2 in zip(train_idx, val_idx, test_idx)]
     else:
         return [(Subset(ds, train_idx), Subset(ds, test_idx)) for train_idx, test_idx in splits]
+
+def predefined_split(ds: Dataset, groups: torch.Tensor, cross_validate: bool = False, fold_data: pd.DataFrame | None = None):
+    if fold_data is None:
+        fold_data = pd.read_feather(FOLD_FILE)
+    
+    validate = (fold_data == 'val').any().any()
+
+    if cross_validate:
+        idx = []
+        for i in range(len(fold_data)):
+            split_idx = []
+            splits = ['train', 'test', 'val'] if validate else ['train', 'test']
+            for split in splits:
+                split_groups = (fold_data.iloc[i].values == split).nonzero()[0]
+                split_idx.append(sum([groups == g for g in split_groups]).nonzero().flatten().numpy())
+            idx.append(tuple(split_idx))
+        if validate:
+            return [(Subset(ds, train_idx), Subset(ds, test_idx), Subset(ds, val_idx)) for train_idx, test_idx, val_idx in idx]
+        else:
+            return [(Subset(ds, train_idx), Subset(ds, test_idx)) for train_idx, test_idx in idx]
+    else:
+        split_idx = []
+        splits = ['train', 'test', 'val'] if validate else ['train', 'test']
+        for split in splits:
+            split_groups = (fold_data.iloc[0].values == split).nonzero()[0]
+            split_idx.append(sum([groups == g for g in split_groups]).nonzero().flatten().numpy())
+        if validate:
+            return Subset(ds, split_idx[0]), Subset(ds, split_idx[1]), Subset(ds, split_idx[2])
+        else:
+            return Subset(ds, split_idx[0]), Subset(ds, split_idx[1])
 
 def init_trainer(
         precision: str = 'bf16-mixed', 

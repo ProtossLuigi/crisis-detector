@@ -9,6 +9,7 @@ from pathlib import Path
 
 import torch
 from torch.utils.data import Dataset
+from sklearn.model_selection import GroupKFold
 
 DATA_DIR = 'dane'
 DATA_DIR2 = 'data'
@@ -16,6 +17,7 @@ VERIFIED1_DIR = 'data/Etap I - bazy/Etap I - zweryfikowane szeregi'
 VERIFIED2_DIR = 'data/Etap I - bazy/Bazy - wersja ostateczna'
 FULL_TEXT_DIR = 'data/Etap I - bazy/Bazy - pełne treści publikacji'
 DATES_FILE = 'data/Crisis Detector.feather'
+FOLD_FILE = 'saved_objects/folds.feather'
 
 FILE_BLACKLIST = []
 
@@ -46,6 +48,29 @@ def prepare_data(force: bool = False):
         df['Nazwa pliku'] = df['Nazwa pliku'].apply(lambda x: x[:-5] + '.feather' if type(x) == str else x)
         df['Nazwa pliku 2'] = df['Nazwa pliku 2'].apply(lambda x: x[:-5] + '.feather' if type(x) == str else x)
         df.to_feather(DATES_FILE)
+
+def generate_splits(i: int = 1, n_splits: int = 5, validate: bool = True) -> None:
+    topics_df = get_data_with_dates(get_verified_data(i))
+    topic_data = []
+    for idx, row in tqdm(enumerate(topics_df.itertuples()), desc='Loading files', total=len(topics_df)):
+        df = pd.read_feather(row.path)
+        magnitude = len(clip_date_range(pd.DatetimeIndex(df['Data wydania']), row.crisis_start, (59, 30)))
+        topic_data.append(pd.DataFrame({'name': [row.name] * magnitude, 'id': [idx] * magnitude}))
+    topic_data = pd.concat(topic_data, ignore_index=True)
+    splits = GroupKFold(n_splits).split(topic_data, groups=topic_data['id'])
+    if validate:
+        train_idx, test_idx = tuple(zip(*splits))
+        val_idx = test_idx[1:] + test_idx[:1]
+        train_idx = [np.array(list(set(t) - set(v))) for t, v in zip(train_idx, val_idx)]
+        splits = list(zip(train_idx, test_idx, val_idx))
+    split_df = pd.DataFrame(columns=topics_df['name'])
+    for fold in tqdm(splits, desc='Saving splits'):
+        row = {}
+        for i, split in enumerate(fold):
+            for name in np.unique(topic_data['name'][split]):
+                row[name] = [['train', 'test', 'val'][i]]
+        split_df = pd.concat((split_df, pd.DataFrame(row)), ignore_index=True)
+    split_df.to_feather(FOLD_FILE)
 
 def get_verified_data(i: int = 1) -> List[str]:
     if i == 1:
