@@ -495,9 +495,10 @@ def train_test(
     model.train_dataloader_len = len(train_dl)
     model.max_epochs = max_epochs
     trainer.fit(model, train_dl, val_dl) 
-    trainer.test(model, test_dl, 'best')
+    result = trainer.test(model, test_dl, 'best')
     if trainer.logger is not None:
         trainer.logger.experiment.finish()
+    return result
 
 def cross_validate(
         model: MyClassifier,
@@ -685,7 +686,7 @@ def main():
 
     loss_multiplier = (torch.full((59,), 1.), nn.functional.sigmoid(torch.linspace(5., -7.5, 30)))
 
-    ds, groups = create_dataset(days_df, 30, loss_multiplier)
+    ds, groups = create_dataset(days_df, 30)
 
     if deterministic:
         seed_everything(42, workers=True)

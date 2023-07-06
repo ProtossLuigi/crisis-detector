@@ -18,7 +18,7 @@ from lightning.pytorch.utilities.types import STEP_OUTPUT
 import torchmetrics
 from transformers import AutoTokenizer, get_linear_schedule_with_warmup
 
-from data_tools import get_data_with_dates, get_verified_data, SeriesDataset, SimpleDataset
+from data_tools import get_data_with_dates, get_verified_data, SeriesDataset, SimpleDataset, load_text_data
 from training_tools import init_trainer, predefined_split, split_dataset, fold_dataset, train_model
 from embedder import TextEmbedder
 
@@ -424,7 +424,7 @@ def main():
 
     if end_to_end or not os.path.isfile(TEXTS_PATH):
         dates = get_data_with_dates(get_verified_data())
-        posts_df = load_data(dates['path'], dates['crisis_start'], drop_invalid=True)
+        posts_df = load_text_data(dates['path'], dates['crisis_start'], drop_invalid=True)
         posts_df.to_feather(TEXTS_PATH)
 
         if deterministic:
@@ -452,8 +452,8 @@ def main():
             embeddings = torch.load(f)
     
     ds, groups = create_dataset(posts_df, embeddings, .02, sample_size, batch_size > 0, padding, balance_classes=True)
-    model = MaskedAggregator(sample_size=sample_size)
-    train_test(model, ds, groups, batch_size=batch_size, max_epochs=100, deterministic=deterministic)
+    model = TransformerAggregator(sample_size=sample_size)
+    train_test(model, ds, groups, batch_size=batch_size, max_epochs=100, deterministic=deterministic, predefined=True)
     
     # cross_validate(MeanAggregator, {'sample_size': sample_size}, ds, groups, True, 5, batch_size=batch_size, num_workers=10, deterministic=deterministic)
 
