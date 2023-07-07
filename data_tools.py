@@ -279,8 +279,8 @@ def extract_text_data(
         sample_size = counts.min()
     if samples_limit is not None:
         sample_size = min(sample_size, samples_limit // 2)
-    # text_df = pd.concat((text_df[text_df['label']].sample(sample_size), text_df[~text_df['label']].sample(sample_size))).sort_index(ignore_index=True)
-    text_df = pd.concat((text_df[text_df['label']].iloc[np.argsort(text_df[text_df['label']]['impact'])[-sample_size:]], text_df[~text_df['label']].iloc[np.argsort(text_df[~text_df['label']]['impact'])[-sample_size:]])).sort_index(ignore_index=True)
+    text_df = pd.concat((text_df[text_df['label']].sample(sample_size), text_df[~text_df['label']].sample(sample_size))).sort_index(ignore_index=True)
+    # text_df = pd.concat((text_df[text_df['label']].iloc[np.argsort(text_df[text_df['label']]['impact'])[-sample_size:]], text_df[~text_df['label']].iloc[np.argsort(text_df[~text_df['label']]['impact'])[-sample_size:]])).sort_index(ignore_index=True)
     text_df['time_label'] = text_df['time'] >= crisis_start
     
     return text_df.sort_values(by='time', ignore_index=True)

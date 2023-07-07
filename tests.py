@@ -17,7 +17,7 @@ def triple_training():
     os.environ['TOKENIZERS_PARALLELISM'] = 'false'
 
     deterministic = True
-    samples_limit = 100
+    samples_limit = 1000
     embedder_training_batch_size = 128
     aggregator_training_batch_size = 512
     day_post_sample_size = 50

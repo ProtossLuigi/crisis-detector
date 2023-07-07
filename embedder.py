@@ -187,7 +187,7 @@ def main():
         seed_everything(42)
 
     if end_to_end or not os.path.isfile(TEXTS_PATH):
-        dates = get_data_with_dates(get_verified_data())
+        dates = get_data_with_dates(get_verified_data(2))
         posts_df = load_text_data(dates['path'], dates['crisis_start'], samples_limit=samples_limit, drop_invalid=True)
         posts_df.to_feather(TEXTS_PATH)
 
@@ -212,7 +212,7 @@ def main():
     weight = None
 
     model = TextEmbedder(pretrained_name, max_epochs=max_epochs, weight=weight)
-    train_test(model, ds, groups, batch_size, max_epochs=max_epochs, deterministic=deterministic)
+    train_test(model, ds, groups, batch_size, max_epochs=max_epochs, deterministic=deterministic, predefined=True)
     
 
 if __name__ == '__main__':
