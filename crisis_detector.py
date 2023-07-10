@@ -29,6 +29,7 @@ def add_embeddings(
 ) -> pd.DataFrame:
     if type(embeddings) == list:
         embeddings = torch.cat(embeddings, dim=0)
+    embeddings = torch.cat((torch.tensor(StandardScaler().fit_transform(np.stack(text_df['statistics'])), dtype=torch.float32), embeddings), dim=1)
     embedding_len = embeddings.shape[1]
     sections = np.cumsum(text_df.groupby(['group', 'Data wydania']).count()['text']).tolist()[:-1]
     embeddings = torch.vsplit(embeddings, sections)
@@ -261,8 +262,8 @@ class MyClassifier(pl.LightningModule):
         self.shift2 = Shift2Metric()
     
     def init_loss_fn(self, class_ratios: torch.Tensor | None = None) -> None:
-        self.class_weights = .5 / class_ratios if class_ratios else None
-        self.loss_fn = nn.CrossEntropyLoss(self.class_weights, reduction='none')
+        class_weights = .5 / class_ratios if class_ratios is not None else torch.tensor([1., 1.])
+        self.loss_fn = nn.CrossEntropyLoss(class_weights, reduction='none')
     
     def forward(self, x):
         raise NotImplementedError()
@@ -516,12 +517,12 @@ def cross_validate(
         # temp_model_savepath: str = 'temp_model.pt',
         topic_names: pd.Series | None = None
 ) -> pd.DataFrame | Tuple[pd.DataFrame, pd.DataFrame]:
-    if predefined == True:
-        folds = predefined_split(ds, groups, True)
-    elif predefined == False:
-        folds = fold_dataset(ds, groups, n_splits)
-    else:
+    if type(predefined) == pd.DataFrame:
         folds = predefined_split(ds, groups, True, predefined)
+    elif type(predefined) == bool and predefined:
+        folds = predefined_split(ds, groups, True)
+    else:
+        folds = fold_dataset(ds, groups, n_splits)
     stats = []
     init_state_dict = model.state_dict()
     if topic_names is not None:
@@ -629,7 +630,7 @@ def get_predictions(model: MyClassifier, ds: Dataset, num_workers: int = 10, pre
 
 def main():
     deterministic = True
-    end_to_end = False
+    end_to_end = True
     text_samples = 50
 
     if deterministic:
@@ -641,7 +642,7 @@ def main():
 
     if end_to_end or not (os.path.isfile(DAYS_DF_PATH) and os.path.isfile(POSTS_DF_PATH)):
 
-        data = get_data_with_dates(get_verified_data(1))
+        data = get_data_with_dates(get_verified_data(2))
 
         days_df, text_df = load_data(data, text_samples, True, None, (59, 30))
         days_df.to_feather(DAYS_DF_PATH)
@@ -691,10 +692,10 @@ def main():
     if deterministic:
         seed_everything(42, workers=True)
     
-    model = MyTransformer(print_test_samples=True)
+    # model = MyTransformer(print_test_samples=True)
     # train_test(model, ds, groups, batch_size=512, max_epochs=150, deterministic=deterministic, predefined=True)
 
-    stats = cross_validate(MyTransformer(), ds, groups, n_splits=5, precision='bf16-mixed', max_epochs=150, deterministic=deterministic, predefined=True)
+    stats = cross_validate(MyTransformer(input_dim=ds[0][0].shape[-1]), ds, groups, n_splits=5, precision='bf16-mixed', max_epochs=150, deterministic=deterministic, predefined=True)
     # df.to_feather('saved_objects/predictions.feather')
 
 if __name__ == '__main__':

@@ -192,8 +192,10 @@ def extract_data(
             warn(f'No data after clipping for {filename}.')
 
     text = src_df.apply(lambda x: " . ".join([str(x['Tytuł publikacji']), str(x['Lead']), str(x[text_col])]), axis=1)
-    text_df = src_df[['Data wydania', 'label', 'Typ medium']].copy()
+    text_df = src_df[['Data wydania', 'label']].copy()
     text_df['text'] = text
+    statistic_cols = ['Ave szacunkowe (PLN)', 'Dotarcie (kontaktów)', 'Zasięg (egz.), (słuchaczy), (widzów), (UU), (subskrybentów), (obserwujących)', 'Wpływ']
+    text_df['statistics'] = list(src_df[statistic_cols].fillna(0).values)
     texts = []
     for date in df.index:
         daily_posts = text_df[text_df['Data wydania'] == date]
@@ -271,6 +273,8 @@ def extract_text_data(
     text = src_df.apply(lambda x: " . ".join([str(x['Tytuł publikacji']), str(x['Lead']), str(x['Kontekst publikacji'])]), axis=1)
     text_df = pd.DataFrame({'text': text, 'label': labels, 'time': src_df['Data wydania'], 'sentiment': src_df['Wydźwięk']})
     # text_df['impact'] = src_df['Dotarcie (kontaktów)'] > np.quantile(src_df['Dotarcie (kontaktów)'], .5)
+    statistic_cols = ['Ave szacunkowe (PLN)', 'Dotarcie (kontaktów)', 'Zasięg (egz.), (słuchaczy), (widzów), (UU), (subskrybentów), (obserwujących)', 'Wpływ']
+    text_df['statistics'] = list(src_df[statistic_cols].values)
     text_df['impact'] = src_df['Dotarcie (kontaktów)']
     counts = text_df['label'].value_counts()
     if len(counts) < 2:

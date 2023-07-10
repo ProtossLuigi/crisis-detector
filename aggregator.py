@@ -6,6 +6,7 @@ import pandas as pd
 from random import sample
 from warnings import warn
 from tqdm import tqdm
+from sklearn.preprocessing import StandardScaler
 
 import torch
 from torch import nn
@@ -210,10 +211,22 @@ class TransformerAggregator(EmbeddingAggregator):
         super().__init__(*args, **kwargs)
         self.n_heads = n_heads
         self.transformer_layers = transformer_layers
+        self.embedding_dim2 = 768
 
         # self.positional_encoding = PositionalEncoding(self.embedding_dim, max_len=self.sample_size)
+        if self.embedding_dim != self.embedding_dim2:
+            self.input_net = nn.Sequential(
+                nn.Linear(self.embedding_dim, self.embedding_dim2),
+                nn.ReLU()
+            )
+            self.output_net = nn.Sequential(
+                nn.Linear(self.embedding_dim2, self.embedding_dim)
+            )
+        else:
+            self.input_net = nn.Identity()
+            self.output_net = nn.Identity()
         self.transformer = nn.TransformerEncoder(
-            nn.TransformerEncoderLayer(self.embedding_dim, self.n_heads, activation=nn.functional.relu, batch_first=True),
+            nn.TransformerEncoderLayer(self.embedding_dim2, self.n_heads, activation=nn.functional.relu, batch_first=True),
             self.transformer_layers
         )
 
@@ -221,7 +234,7 @@ class TransformerAggregator(EmbeddingAggregator):
     
     def forward(self, x: torch.Tensor):
         # x = self.positional_encoding(x)
-        return self.transformer(x).mean(dim=1)
+        return self.output_net(self.transformer(self.input_net(x))).mean(dim=1)
 
 class MaskedAggregator(EmbeddingAggregator):
     def __init__(self, *args: Any, **kwargs: Any) -> None:
@@ -264,65 +277,18 @@ class MaskedAggregator(EmbeddingAggregator):
         sample_mask = self.mlp2(x.mT.flatten(0, 1)).view(x.shape[0], x.shape[2], x.shape[1]).mT
         return self.mlp3((embedding_mask * sample_mask * x).mean(dim=1))
 
-def extract_data(
-        filename: str,
-        crisis_start: pd.Timestamp,
-        window_size: int | Tuple[int, int] = 30,
-        drop_invalid: bool = False
-) -> pd.DataFrame | None:
-    src_df = pd.read_feather(filename)
-
-    if type(window_size) == int:
-        window_size = (window_size, window_size)
-    window = (crisis_start - pd.Timedelta(days=window_size[0]), crisis_start + pd.Timedelta(days=window_size[1]))
-
-    src_df = src_df[(window[0] <= src_df['Data wydania']) & (src_df['Data wydania'] < window[1])]
-
-    if src_df['Kryzys'].hasnans:
-        if src_df['Kryzys'].nunique(dropna=False) != 2:
-            if drop_invalid:
-                return None
-            else:
-                warn(f'Invalid Kryzys column values in {filename}.')
-        labels = ~src_df['Kryzys'].isna()
-    else:
-        src_df['Kryzys'] = src_df['Kryzys'].apply(lambda x: x[:3])
-        if src_df['Kryzys'].nunique(dropna=False) != 2:
-            if drop_invalid:
-                return None
-            else:
-                warn(f'Invalid Kryzys column values in {filename}.')
-        labels = src_df['Kryzys'] != 'NIE'
-
-    text = src_df.apply(lambda x: " . ".join([str(x['Tytuł publikacji']), str(x['Lead']), str(x['Kontekst publikacji'])]), axis=1)
-    text_df = pd.DataFrame({'text': text, 'label': labels, 'date': src_df['Data wydania']})
-    
-    return text_df
-
-def load_data(filenames: Iterable[str], crisis_dates: Iterable[pd.Timestamp], drop_invalid: bool = False) -> pd.DataFrame:
-    assert len(filenames) == len(crisis_dates)
-    dfs = []
-    for i, (fname, date) in enumerate(tqdm(zip(filenames, crisis_dates), total=len(filenames))):
-        try:
-            df = extract_data(fname, date, drop_invalid=drop_invalid)
-        except KeyError:
-            warn(f'Invalid columns in {fname}')
-            df = None
-        if df is None:
-            continue
-        df['group'] = i
-        dfs.append(df)
-    return pd.concat(dfs, ignore_index=True)
-
 def create_dataset(df: pd.DataFrame, embeddings: torch.Tensor, threshold: float = 0., max_samples: int = 0, batched: bool = True, padding: bool = False, balance_classes: bool = False):
     assert (batched and max_samples) or not padding
+    # features = torch.zeros((len(df), 0), dtype=torch.float32)
+    features = torch.tensor(StandardScaler().fit_transform(np.stack(df['statistics'])), dtype=torch.float32)
+    features = torch.cat((features, embeddings), dim=1)
     labels = torch.tensor((df[['group', 'time', 'label']].groupby(['group', 'time']).mean()['label'] > threshold).to_list(), dtype=torch.long)
     groups = torch.tensor(df[['group', 'time']].drop_duplicates()['group'].to_list())
     sections = np.cumsum(df.groupby(['group', 'time']).count()['text']).tolist()[:-1]
-    embeddings = list(torch.vsplit(embeddings, sections))
-    for i in range(len(embeddings)):
-        sample_size = min(embeddings[i].shape[0], max_samples) if max_samples else embeddings[i].shape[0]
-        embeddings[i] = embeddings[i][torch.randperm(embeddings[i].shape[0])[:sample_size]]
+    features = list(torch.vsplit(features, sections))
+    for i in range(len(features)):
+        sample_size = min(features[i].shape[0], max_samples) if max_samples else features[i].shape[0]
+        features[i] = features[i][torch.randperm(features[i].shape[0])[:sample_size]]
     if balance_classes:
         sample_selector = torch.zeros_like(labels, dtype=bool)
         for g in groups.unique():
@@ -337,13 +303,13 @@ def create_dataset(df: pd.DataFrame, embeddings: torch.Tensor, threshold: float 
             sample_selector[indices_1] = True
         labels = labels[sample_selector]
         groups = groups[sample_selector]
-        embeddings = [embeddings[i] for i in range(len(sample_selector)) if sample_selector[i]]
+        features = [features[i] for i in range(len(sample_selector)) if sample_selector[i]]
     if batched:
-        embeddings = pad_sequence(embeddings, batch_first=True)
+        features = pad_sequence(features, batch_first=True)
         if padding:
-            embeddings = nn.functional.pad(embeddings, (0, 0, 0, max_samples - embeddings.shape[1]))
-        return TensorDataset(embeddings, labels), groups
-    return SimpleDataset(embeddings, labels), groups
+            features = nn.functional.pad(features, (0, 0, 0, max_samples - features.shape[1]))
+        return TensorDataset(features, labels), groups
+    return SimpleDataset(features, labels), groups
 
 def train_test(
         model: EmbeddingAggregator, 
@@ -368,7 +334,7 @@ def train_test(
     test_dl = DataLoader(test_ds, batch_size, shuffle=False, num_workers=10, pin_memory=True)
     model.train_dataloader_len = len(train_dl)
     model.max_epochs = max_epochs
-    trainer.fit(model, train_dl, val_dl) 
+    trainer.fit(model, train_dl, val_dl)
     trainer.test(model, test_dl, 'best')
     if trainer.logger is not None:
         trainer.logger.experiment.finish()
@@ -423,7 +389,7 @@ def main():
         seed_everything(42)
 
     if end_to_end or not os.path.isfile(TEXTS_PATH):
-        dates = get_data_with_dates(get_verified_data())
+        dates = get_data_with_dates(get_verified_data(2))
         posts_df = load_text_data(dates['path'], dates['crisis_start'], drop_invalid=True)
         posts_df.to_feather(TEXTS_PATH)
 
@@ -451,8 +417,11 @@ def main():
         with open(EMBEDDINGS_PATH, 'rb') as f:
             embeddings = torch.load(f)
     
+    print(len(posts_df), np.isnan(np.stack(posts_df['statistics'])).any(axis=1).sum())
+    return
+    
     ds, groups = create_dataset(posts_df, embeddings, .02, sample_size, batch_size > 0, padding, balance_classes=True)
-    model = TransformerAggregator(sample_size=sample_size)
+    model = TransformerAggregator(sample_size=sample_size, embedding_dim=ds[0][0].shape[-1])
     train_test(model, ds, groups, batch_size=batch_size, max_epochs=100, deterministic=deterministic, predefined=True)
     
     # cross_validate(MeanAggregator, {'sample_size': sample_size}, ds, groups, True, 5, batch_size=batch_size, num_workers=10, deterministic=deterministic)
