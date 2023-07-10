@@ -417,9 +417,6 @@ def main():
         with open(EMBEDDINGS_PATH, 'rb') as f:
             embeddings = torch.load(f)
     
-    print(len(posts_df), np.isnan(np.stack(posts_df['statistics'])).any(axis=1).sum())
-    return
-    
     ds, groups = create_dataset(posts_df, embeddings, .02, sample_size, batch_size > 0, padding, balance_classes=True)
     model = TransformerAggregator(sample_size=sample_size, embedding_dim=ds[0][0].shape[-1])
     train_test(model, ds, groups, batch_size=batch_size, max_epochs=100, deterministic=deterministic, predefined=True)
