@@ -316,9 +316,9 @@ def load_data(filenames: Iterable[str], crisis_dates: Iterable[pd.Timestamp], dr
 
 def create_dataset(df: pd.DataFrame, embeddings: torch.Tensor, threshold: float = 0., max_samples: int = 0, batched: bool = True, padding: bool = False, balance_classes: bool = False):
     assert (batched and max_samples) or not padding
-    labels = torch.tensor((df[['group', 'date', 'label']].groupby(['group', 'date']).mean()['label'] > threshold).to_list(), dtype=torch.long)
-    groups = torch.tensor(df[['group', 'date']].drop_duplicates()['group'].to_list())
-    sections = np.cumsum(df.groupby(['group', 'date']).count()['text']).tolist()[:-1]
+    labels = torch.tensor((df[['group', 'time', 'label']].groupby(['group', 'time']).mean()['label'] > threshold).to_list(), dtype=torch.long)
+    groups = torch.tensor(df[['group', 'time']].drop_duplicates()['group'].to_list())
+    sections = np.cumsum(df.groupby(['group', 'time']).count()['text']).tolist()[:-1]
     embeddings = list(torch.vsplit(embeddings, sections))
     for i in range(len(embeddings)):
         sample_size = min(embeddings[i].shape[0], max_samples) if max_samples else embeddings[i].shape[0]
@@ -357,12 +357,12 @@ def train_test(
         predefined: bool | pd.DataFrame = False
 ):
     trainer = init_trainer(precision, early_stopping=True, logging={'name': 'aggregator', 'project': 'crisis-detector'}, max_epochs=max_epochs, max_time=max_time, deterministic=deterministic)
-    if predefined == True:
+    if type(predefined) == pd.DataFrame:
+        train_ds, test_ds, val_ds = predefined_split(ds, groups, fold_data=predefined)
+    elif type(predefined) == bool and predefined:
         train_ds, test_ds, val_ds = predefined_split(ds, groups)
-    elif predefined == False:
-        train_ds, test_ds, val_ds = split_dataset(ds, groups, n_splits=10, validate=True)
     else:
-        train_ds, test_ds, val_ds = predefined_split(ds, groups, predefined=predefined)
+        train_ds, test_ds, val_ds = split_dataset(ds, groups, n_splits=10, validate=True)
     train_dl = DataLoader(train_ds, batch_size, shuffle=True, num_workers=10, pin_memory=True)
     val_dl = DataLoader(val_ds, batch_size, shuffle=False, num_workers=10, pin_memory=True)
     test_dl = DataLoader(test_ds, batch_size, shuffle=False, num_workers=10, pin_memory=True)

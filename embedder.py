@@ -153,12 +153,12 @@ def train_test(
         predefined: bool | pd.DataFrame = False
 ):
     trainer = init_trainer(precision, early_stopping=True, logging={'name': 'embedder', 'project': 'crisis-detector'}, max_epochs=max_epochs, max_time=max_time, deterministic=deterministic)
-    if predefined == True:
+    if type(predefined) == pd.DataFrame:
+        train_ds, test_ds, val_ds = predefined_split(ds, groups, fold_data=predefined)
+    elif type(predefined) == bool and predefined:
         train_ds, test_ds, val_ds = predefined_split(ds, groups)
-    elif predefined == False:
-        train_ds, test_ds, val_ds = split_dataset(ds, groups, n_splits=10, validate=True)
     else:
-        train_ds, test_ds, val_ds = predefined_split(ds, groups, predefined=predefined)
+        train_ds, test_ds, val_ds = split_dataset(ds, groups, n_splits=10, validate=True)
     train_dl = DataLoader(train_ds, batch_size, shuffle=True, num_workers=10, pin_memory=True)
     val_dl = DataLoader(val_ds, batch_size, shuffle=False, num_workers=10, pin_memory=True)
     test_dl = DataLoader(test_ds, batch_size, shuffle=False, num_workers=10, pin_memory=True)
