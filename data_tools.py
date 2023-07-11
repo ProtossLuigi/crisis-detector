@@ -274,7 +274,7 @@ def extract_text_data(
     text_df = pd.DataFrame({'text': text, 'label': labels, 'time': src_df['Data wydania'], 'sentiment': src_df['Wydźwięk']})
     # text_df['impact'] = src_df['Dotarcie (kontaktów)'] > np.quantile(src_df['Dotarcie (kontaktów)'], .5)
     statistic_cols = ['Ave szacunkowe (PLN)', 'Dotarcie (kontaktów)', 'Zasięg (egz.), (słuchaczy), (widzów), (UU), (subskrybentów), (obserwujących)', 'Wpływ']
-    text_df['statistics'] = list(src_df[statistic_cols].values)
+    text_df['statistics'] = list(src_df[statistic_cols].fillna(0.).values)
     text_df['impact'] = src_df['Dotarcie (kontaktów)']
     counts = text_df['label'].value_counts()
     if len(counts) < 2:

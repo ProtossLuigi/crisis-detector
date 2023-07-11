@@ -63,7 +63,7 @@ def triple_training():
         seed_everything(42, workers=True)
     
     ds, groups = aggregator.create_dataset(posts_df, embeddings, .02, day_post_sample_size, aggregator_training_batch_size > 0, padding, balance_classes=True)
-    aggregator_model = aggregator.TransformerAggregator(sample_size=day_post_sample_size)
+    aggregator_model = aggregator.TransformerAggregator(sample_size=day_post_sample_size, embedding_dim=ds[0][0].shape[-1])
     aggregator.train_test(aggregator_model, ds, groups, batch_size=aggregator_training_batch_size, max_epochs=150, deterministic=deterministic, predefined=True)
 
     posts_df = None
@@ -95,7 +95,7 @@ def triple_training():
     if deterministic:
         seed_everything(42, workers=True)
     
-    detector_model = crisis_detector.MyTransformer(print_test_samples=True)
+    detector_model = crisis_detector.MyTransformer(input_dim=ds[0][0].shape[-1], print_test_samples=True)
     crisis_detector.train_test(detector_model, ds, groups, batch_size=512, max_epochs=150, deterministic=deterministic, predefined=True)
 
 def full_cross_validation():
