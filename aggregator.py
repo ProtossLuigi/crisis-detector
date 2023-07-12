@@ -280,7 +280,8 @@ class MaskedAggregator(EmbeddingAggregator):
 def create_dataset(df: pd.DataFrame, embeddings: torch.Tensor, threshold: float = 0., max_samples: int = 0, batched: bool = True, padding: bool = False, balance_classes: bool = False):
     assert (batched and max_samples) or not padding
     # features = torch.zeros((len(df), 0), dtype=torch.float32)
-    features = torch.tensor(StandardScaler().fit_transform(np.stack(df['statistics'])), dtype=torch.float32)
+    features = torch.tensor(np.stack(df['statistics']), dtype=torch.float32)
+    # features = torch.tensor(StandardScaler().fit_transform(np.stack(df['statistics'])), dtype=torch.float32)
     features = torch.cat((features, embeddings), dim=1)
     labels = torch.tensor((df[['group', 'time', 'label']].groupby(['group', 'time']).mean()['label'] > threshold).to_list(), dtype=torch.long)
     groups = torch.tensor(df[['group', 'time']].drop_duplicates()['group'].to_list())

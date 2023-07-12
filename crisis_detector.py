@@ -29,7 +29,8 @@ def add_embeddings(
 ) -> pd.DataFrame:
     if type(embeddings) == list:
         embeddings = torch.cat(embeddings, dim=0)
-    embeddings = torch.cat((torch.tensor(StandardScaler().fit_transform(np.stack(text_df['statistics'])), dtype=torch.float32), embeddings), dim=1)
+    embeddings = torch.cat((torch.tensor(np.stack(text_df['statistics']), dtype=torch.float32), embeddings), dim=1)
+    # embeddings = torch.cat((torch.tensor(StandardScaler().fit_transform(np.stack(text_df['statistics'])), dtype=torch.float32), embeddings), dim=1)
     embedding_len = embeddings.shape[1]
     sections = np.cumsum(text_df.groupby(['group', 'Data wydania']).count()['text']).tolist()[:-1]
     embeddings = torch.vsplit(embeddings, sections)
@@ -687,7 +688,7 @@ def main():
 
     loss_multiplier = (torch.full((59,), 1.), nn.functional.sigmoid(torch.linspace(5., -7.5, 30)))
 
-    ds, groups = create_dataset(days_df, 30)
+    ds, groups = create_dataset(days_df, 30, loss_multiplier)
 
     if deterministic:
         seed_everything(42, workers=True)

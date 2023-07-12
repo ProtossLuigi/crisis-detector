@@ -10,6 +10,7 @@ from pathlib import Path
 import torch
 from torch.utils.data import Dataset
 from sklearn.model_selection import GroupKFold
+from sklearn.preprocessing import StandardScaler
 
 DATA_DIR = 'dane'
 DATA_DIR2 = 'data'
@@ -195,7 +196,7 @@ def extract_data(
     text_df = src_df[['Data wydania', 'label']].copy()
     text_df['text'] = text
     statistic_cols = ['Ave szacunkowe (PLN)', 'Dotarcie (kontaktów)', 'Zasięg (egz.), (słuchaczy), (widzów), (UU), (subskrybentów), (obserwujących)', 'Wpływ']
-    text_df['statistics'] = list(src_df[statistic_cols].fillna(0).values)
+    text_df['statistics'] = list(StandardScaler().fit_transform(src_df[statistic_cols].fillna(0).values))
     texts = []
     for date in df.index:
         daily_posts = text_df[text_df['Data wydania'] == date]
@@ -206,9 +207,13 @@ def extract_data(
             ratio = min(total_samples / num_samples, pos_samples / (num_samples * class_balance), neg_samples / (num_samples * (1. - class_balance)), 1.)
             if ratio == 0.:
                 continue
-            posts_pos = daily_posts[daily_posts['label']].sample(n=int(num_samples * ratio * class_balance))
-            posts_neg = daily_posts[~daily_posts['label']].sample(n=int(num_samples * ratio * (1. - class_balance)))
-            texts.append((posts_neg + posts_pos).sort_index())
+            # idx_0 = np.argsort(daily_posts[~daily_posts['label']]['statistics'].apply(np.sum))[-int(num_samples * ratio * (1. - class_balance)):]
+            # idx_1 = np.argsort(daily_posts[daily_posts['label']]['statistics'].apply(np.sum))[-int(num_samples * ratio * class_balance):]
+            # posts_0 = daily_posts[~daily_posts['label']].iloc[idx_0]
+            # posts_1 = daily_posts[daily_posts['label']].iloc[idx_1]
+            posts_1 = daily_posts[daily_posts['label']].sample(n=int(num_samples * ratio * class_balance))
+            posts_0 = daily_posts[~daily_posts['label']].sample(n=int(num_samples * ratio * (1. - class_balance)))
+            texts.append((posts_0 + posts_1).sort_index())
         else:
             texts.append(daily_posts if num_samples == 0 or daily_posts.shape[0] <= num_samples else daily_posts.sample(n=num_samples))
     text_df = pd.concat(texts).reset_index(names='id')
@@ -284,7 +289,12 @@ def extract_text_data(
     if samples_limit is not None:
         sample_size = min(sample_size, samples_limit // 2)
     text_df = pd.concat((text_df[text_df['label']].sample(sample_size), text_df[~text_df['label']].sample(sample_size))).sort_index(ignore_index=True)
-    # text_df = pd.concat((text_df[text_df['label']].iloc[np.argsort(text_df[text_df['label']]['impact'])[-sample_size:]], text_df[~text_df['label']].iloc[np.argsort(text_df[~text_df['label']]['impact'])[-sample_size:]])).sort_index(ignore_index=True)
+    # if sample_size > 0:
+    #     idx_0 = np.argsort(text_df[~text_df['label']]['statistics'].apply(np.sum))[-sample_size:]
+    #     idx_1 = np.argsort(text_df[text_df['label']]['statistics'].apply(np.sum))[-sample_size:]
+    # else:
+    #     idx_0, idx_1 = [], []
+    # text_df = pd.concat((text_df[~text_df['label']].iloc[idx_0], text_df[text_df['label']].iloc[idx_1])).sort_index(ignore_index=True)
     text_df['time_label'] = text_df['time'] >= crisis_start
     
     return text_df.sort_values(by='time', ignore_index=True)
